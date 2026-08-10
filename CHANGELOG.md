@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **llama.cpp Vulkan builds for desktop Linux**: consumers can now set
+  `XYBRID_LLAMA_CPP_VULKAN=1` when building `platform-desktop` to compile the
+  bundled backend with `GGML_VULKAN=ON`; local LLM telemetry reports `vulkan`
+  for those builds. Windows is not supported yet — ggml builds its GLSL
+  compiler as a nested CMake project whose paths exceed Windows' 260-character
+  limit under cargo's `OUT_DIR`, so the build fails wherever the repo is
+  checked out. Every other target rejects the variable with a clear error.
+
 ### Changed
 
 - **BoltFFI 0.25.3 → 0.29.3.** Every exported C symbol is renamed
