@@ -276,6 +276,187 @@ public typealias Model = XybridModel
 // `boltffi generate`, unlike `xybrid_bolt.swift`).
 extension XybridModel: @unchecked Sendable {}
 
+/// A pull-paced asynchronous stream of generated tokens.
+///
+/// The iterator asks the native streaming session for exactly one event from
+/// each call to ``AsyncIterator/next()``. A slow consumer therefore stops
+/// pulling from the facade and preserves its bounded-channel backpressure
+/// instead of accumulating tokens in an unbounded Swift buffer.
+public struct XybridTokenStream: AsyncSequence, Sendable {
+    public typealias Element = XybridStreamToken
+
+    /// An iterator over one native streaming session.
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        fileprivate var state: XybridTokenStreamState?
+
+        public mutating func next() async throws -> XybridStreamToken? {
+            guard let state else { return nil }
+            let token = try await state.next()
+            if token == nil {
+                self.state = nil
+            }
+            return token
+        }
+    }
+
+    private let makeState: @Sendable () -> XybridTokenStreamState
+
+    fileprivate init(
+        model: XybridModel,
+        envelope: XybridEnvelope,
+        options: XybridRunOptions?
+    ) {
+        self.init(
+            start: { try model.runStream(envelope: envelope, options: options) },
+            next: { try model.streamNext(streamId: $0) },
+            close: { model.streamClose(streamId: $0) }
+        )
+    }
+
+    // Closure injection keeps the pull and cancellation contract testable
+    // without loading a native model. This initializer remains module-internal.
+    init(
+        start: @escaping @Sendable () throws -> UInt64,
+        next: @escaping @Sendable (UInt64) throws -> XybridStreamEvent,
+        close: @escaping @Sendable (UInt64) -> Void
+    ) {
+        makeState = {
+            XybridTokenStreamState(start: start, next: next, close: close)
+        }
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(state: makeState())
+    }
+}
+
+private final class XybridTokenStreamState: @unchecked Sendable {
+    private let lock = NSLock()
+    private let startSession: @Sendable () throws -> UInt64
+    private let pullNext: @Sendable (UInt64) throws -> XybridStreamEvent
+    private let closeSessionHandle: @Sendable (UInt64) -> Void
+    private var streamId: UInt64?
+    private var finished = false
+
+    init(
+        start: @escaping @Sendable () throws -> UInt64,
+        next: @escaping @Sendable (UInt64) throws -> XybridStreamEvent,
+        close: @escaping @Sendable (UInt64) -> Void
+    ) {
+        startSession = start
+        pullNext = next
+        closeSessionHandle = close
+    }
+
+    deinit {
+        close()
+    }
+
+    func next() async throws -> XybridStreamToken? {
+        if Task.isCancelled {
+            close()
+            return nil
+        }
+
+        do {
+            let token = try await withTaskCancellationHandler {
+                try await Task.detached { try self.pullOne() }.value
+            } onCancel: {
+                self.close()
+            }
+            if Task.isCancelled {
+                close()
+                return nil
+            }
+            return token
+        } catch {
+            if Task.isCancelled {
+                close()
+                return nil
+            }
+            throw error
+        }
+    }
+
+    private func pullOne() throws -> XybridStreamToken? {
+        let id = try sessionId()
+        let event: XybridStreamEvent
+        do {
+            event = try pullNext(id)
+        } catch {
+            close()
+            throw error
+        }
+
+        switch event.kind {
+        case .token:
+            guard let token = event.token else {
+                close()
+                throw XybridError.inferenceError(
+                    message: "Native stream returned a token event without a token"
+                )
+            }
+            return token
+        case .complete:
+            close()
+            return nil
+        }
+    }
+
+    private func sessionId() throws -> UInt64 {
+        lock.lock()
+        if finished {
+            lock.unlock()
+            throw CancellationError()
+        }
+        if let streamId {
+            lock.unlock()
+            return streamId
+        }
+        lock.unlock()
+
+        let openedId: UInt64
+        do {
+            openedId = try startSession()
+        } catch {
+            close()
+            throw error
+        }
+        lock.lock()
+        if finished {
+            lock.unlock()
+            closeSessionHandle(openedId)
+            throw CancellationError()
+        }
+        if let existingId = streamId {
+            lock.unlock()
+            // Defensive only: AsyncIteratorProtocol requires serialized next
+            // calls, but do not leak a session if a caller violates it.
+            closeSessionHandle(openedId)
+            return existingId
+        }
+        streamId = openedId
+        lock.unlock()
+        return openedId
+    }
+
+    private func close() {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return
+        }
+        finished = true
+        let id = streamId
+        streamId = nil
+        lock.unlock()
+
+        if let id {
+            closeSessionHandle(id)
+        }
+    }
+}
+
 public extension XybridModel {
     /// Run inference with the model's default options.
     ///
@@ -353,12 +534,6 @@ public extension XybridModel {
     /// pull-based session API (``runStream(envelope:options:)`` /
     /// ``streamNext(streamId:)`` / ``streamClose(streamId:)``).
     ///
-    /// Note: the producing task pulls as fast as generation runs and buffers
-    /// unconsumed tokens in the async sequence (unbounded), so the facade's
-    /// bounded-channel backpressure applies to the raw session pull API, not
-    /// to a slow consumer of this sequence. Buffering is bounded by
-    /// `max_tokens` in practice; a bounded policy here would drop tokens.
-    ///
     /// ```swift
     /// for try await token in model.streamTokens(envelope: env) {
     ///     print(token.token, terminator: "")
@@ -367,38 +542,8 @@ public extension XybridModel {
     func streamTokens(
         envelope: XybridEnvelope,
         options: XybridRunOptions? = nil
-    ) -> AsyncThrowingStream<XybridStreamToken, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task.detached {
-                var streamId: UInt64?
-                do {
-                    let id = try self.runStream(envelope: envelope, options: options)
-                    streamId = id
-                    while !Task.isCancelled {
-                        let event = try self.streamNext(streamId: id)
-                        switch event.kind {
-                        case .token:
-                            if let token = event.token {
-                                continuation.yield(token)
-                            }
-                        case .complete:
-                            self.streamClose(streamId: id)
-                            continuation.finish()
-                            return
-                        }
-                    }
-                    // Cancelled: close the session to abort the in-flight run.
-                    self.streamClose(streamId: id)
-                    continuation.finish()
-                } catch {
-                    // A failed streamNext has already closed the session
-                    // bolt-side; closing again is an idempotent map-remove.
-                    if let id = streamId { self.streamClose(streamId: id) }
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
+    ) -> XybridTokenStream {
+        XybridTokenStream(model: self, envelope: envelope, options: options)
     }
 }
 
