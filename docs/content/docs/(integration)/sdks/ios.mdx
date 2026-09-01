@@ -95,6 +95,61 @@ let result = try model.run(envelope: envelope)
 print("Transcription: \(result.text ?? "")")
 ```
 
+## Live microphone transcription
+
+Live ASR accepts mono 16 kHz `Float32` PCM. `feedAsync` only queues samples;
+Whisper inference runs on the native worker rather than the audio callback.
+
+```swift
+import AVFoundation
+import Xybrid
+
+let model = try await Xybrid.model("whisper-tiny-ggml").load()
+let asr = try model.liveASR(config: .make(language: "en"))
+
+let partialTask = Task {
+    for try await partial in asr.partials() {
+        await MainActor.run { transcriptLabel.text = partial.text }
+    }
+}
+
+let audio = AVAudioSession.sharedInstance()
+try audio.setCategory(.record, mode: .measurement)
+try audio.setPreferredSampleRate(16_000)
+try audio.setPreferredInputNumberOfChannels(1)
+try audio.setActive(true)
+
+let engine = AVAudioEngine()
+let input = engine.inputNode
+let format = input.outputFormat(forBus: 0)
+guard format.sampleRate == 16_000, format.channelCount == 1 else {
+    fatalError("Resample the negotiated microphone format to mono 16 kHz")
+}
+
+input.installTap(onBus: 0, bufferSize: 320, format: format) { buffer, _ in
+    guard let channel = buffer.floatChannelData?[0] else { return }
+    let samples = Array(UnsafeBufferPointer(
+        start: channel,
+        count: Int(buffer.frameLength)
+    ))
+    Task { try await asr.feedAsync(samples: samples) }
+}
+engine.prepare()
+try engine.start()
+
+// When recording ends:
+engine.stop()
+input.removeTap(onBus: 0)
+let final = try await asr.flushAsync()
+try asr.stop()
+_ = await partialTask.result
+print(final.text)
+```
+
+`flushAsync()` finalizes one utterance. Use `resetAsync()` to start another
+without reloading the model, or `stop()` to end the worker. If iOS negotiates a
+different hardware format, convert it to mono 16 kHz before calling `feedAsync`.
+
 ### Text (Text-to-Speech)
 
 ```swift
