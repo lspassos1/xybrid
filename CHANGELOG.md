@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-stage pipelines now reach every native SDK.** Swift, Kotlin, and
+  Unity can construct pipelines from YAML, files, or bundles, inspect stage
+  identifiers, and execute them through the shared BoltFFI handle. Pipeline
+  results preserve final-stage provenance and per-stage latency metrics; Swift
+  and Kotlin include off-UI-thread async conveniences (#502).
+
+### Fixed
+
+- Pipeline stage latency IDs now use the YAML stage identifier rather than the
+  underlying model ID, and Flutter no longer misreports `cloud:<provider>` or
+  `server:<endpoint>` final stages as local execution (#502).
+
 ### Planned
 
 - **Multimodal KV-prefix reuse**: the per-frame prefill cost lever for live vision — **deferred** from 0.2.0, not yet implemented.
