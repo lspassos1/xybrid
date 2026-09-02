@@ -3900,6 +3900,14 @@ impl XybridModel {
         envelope: &Envelope,
         options: &RunOptions,
     ) -> SdkResult<InferenceResult> {
+        // A cancellation token needs boundaries throughout generation, not
+        // only a pre-run check. Reuse the streaming executor internally for
+        // cancellable batch calls and discard its chunks; the caller still
+        // receives the same final InferenceResult shape. Non-streaming models
+        // continue through their single, indivisible executor call.
+        if options.cancellation_token.is_some() {
+            return self.run_streaming_with_options(envelope, options, |_| Ok(()));
+        }
         let mut abort_state = AbortState::new(options);
         abort_state
             .check_before_run()
@@ -4033,6 +4041,9 @@ impl XybridModel {
         context: &ConversationContext,
         options: &RunOptions,
     ) -> SdkResult<InferenceResult> {
+        if options.cancellation_token.is_some() {
+            return self.run_streaming_with_context_options(envelope, context, options, |_| Ok(()));
+        }
         let mut abort_state = AbortState::new(options);
         abort_state
             .check_before_run()

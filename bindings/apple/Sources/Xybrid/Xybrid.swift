@@ -275,6 +275,7 @@ public typealias Model = XybridModel
 // here in the hand-written wrapper (regen-safe — never overwritten by
 // `boltffi generate`, unlike `xybrid_bolt.swift`).
 extension XybridModel: @unchecked Sendable {}
+extension XybridCancellationToken: @unchecked Sendable {}
 
 public extension XybridModel {
     /// Run inference with the model's default options.
@@ -284,6 +285,62 @@ public extension XybridModel {
     /// generation config, abort signals, or cloud-fallback behaviour.
     func run(envelope: XybridEnvelope) throws -> XybridResult {
         try run(envelope: envelope, options: nil)
+    }
+
+    /// Run inference with an automatically managed cancellation handle.
+    ///
+    /// Pass a token to the generated three-argument overload when a separate
+    /// UI control needs to stop this synchronous call from another thread.
+    func run(
+        envelope: XybridEnvelope,
+        options: XybridRunOptions?
+    ) throws -> XybridResult {
+        let cancellation = XybridCancellationToken()
+        return try run(envelope: envelope, options: options, cancellation: cancellation)
+    }
+
+    /// Start a pull stream with an internally managed cancellation handle.
+    /// Closing the stream cancels the native worker.
+    func runStream(
+        envelope: XybridEnvelope,
+        options: XybridRunOptions?
+    ) throws -> UInt64 {
+        let cancellation = XybridCancellationToken()
+        return try runStream(
+            envelope: envelope,
+            options: options,
+            cancellation: cancellation
+        )
+    }
+
+    /// Context-aware compatibility overload with automatic cancellation state.
+    func runWithContext(
+        envelope: XybridEnvelope,
+        context: XybridConversationContext,
+        options: XybridRunOptions?
+    ) throws -> XybridResult {
+        let cancellation = XybridCancellationToken()
+        return try runWithContext(
+            envelope: envelope,
+            context: context,
+            options: options,
+            cancellation: cancellation
+        )
+    }
+
+    /// Context-aware pull-stream compatibility overload.
+    func runStreamWithContext(
+        envelope: XybridEnvelope,
+        context: XybridConversationContext,
+        options: XybridRunOptions?
+    ) throws -> UInt64 {
+        let cancellation = XybridCancellationToken()
+        return try runStreamWithContext(
+            envelope: envelope,
+            context: context,
+            options: options,
+            cancellation: cancellation
+        )
     }
 }
 
@@ -326,9 +383,28 @@ public extension XybridModel {
     /// Run inference without blocking the calling thread or actor.
     func runAsync(
         envelope: XybridEnvelope,
-        options: XybridRunOptions? = nil
+        options: XybridRunOptions? = nil,
+        cancellationToken: XybridCancellationToken? = nil
     ) async throws -> XybridResult {
-        try await Task.detached { try self.run(envelope: envelope, options: options) }.value
+        let cancellation = cancellationToken ?? XybridCancellationToken()
+        return try await withTaskCancellationHandler {
+            do {
+                let result = try await Task.detached {
+                    try self.run(
+                        envelope: envelope,
+                        options: options,
+                        cancellation: cancellation
+                    )
+                }.value
+                try Task.checkCancellation()
+                return result
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw error
+            }
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     /// Warm up the model without blocking the calling thread or actor.
@@ -366,13 +442,19 @@ public extension XybridModel {
     /// ```
     func streamTokens(
         envelope: XybridEnvelope,
-        options: XybridRunOptions? = nil
+        options: XybridRunOptions? = nil,
+        cancellationToken: XybridCancellationToken? = nil
     ) -> AsyncThrowingStream<XybridStreamToken, Error> {
-        AsyncThrowingStream { continuation in
+        let cancellation = cancellationToken ?? XybridCancellationToken()
+        return AsyncThrowingStream { continuation in
             let task = Task.detached {
                 var streamId: UInt64?
                 do {
-                    let id = try self.runStream(envelope: envelope, options: options)
+                    let id = try self.runStream(
+                        envelope: envelope,
+                        options: options,
+                        cancellation: cancellation
+                    )
                     streamId = id
                     while !Task.isCancelled {
                         let event = try self.streamNext(streamId: id)
@@ -397,7 +479,10 @@ public extension XybridModel {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in
+                cancellation.cancel()
+                task.cancel()
+            }
         }
     }
 }
@@ -430,6 +515,9 @@ public typealias ToolResult = XybridToolResult
 /// One token emitted by a streaming run. The terminal token carries the
 /// turn's `toolCalls` and `rawText`.
 public typealias StreamToken = XybridStreamToken
+
+/// Cooperative one-shot cancellation handle for a model run.
+public typealias CancellationToken = XybridCancellationToken
 
 // MARK: - GenerationConfig ergonomics
 //
