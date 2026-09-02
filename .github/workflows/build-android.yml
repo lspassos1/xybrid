@@ -57,11 +57,9 @@ env:
   NDK_VERSION: "27.0.12077973"
 
 jobs:
-  # Single job (no per-ABI matrix): the bolt build
-  # (tools/scripts/build-android-bolt.sh, invoked by `cargo xtask
-  # build-android`) always builds every ABI in one `boltffi pack android`
-  # invocation, so a matrix would just re-run the full ~all-ABI build N
-  # times. Build once, verify the ABIs the Kotlin AAR ships.
+  # Single job (no per-ABI matrix): the Bazel AAR target fans out to every
+  # shipped ABI inside one graph. Build once, then audit the exact artifact a
+  # Maven consumer receives.
   build-android:
     name: Build Android .so (all ABIs)
     runs-on: ubuntu-latest
@@ -123,8 +121,8 @@ jobs:
 
       # Build the feature-complete 3-ABI AAR with Bazel and stage its jniLibs
       # into bindings/kotlin/libs/ (the layout the verify + gate steps and the
-      # Kotlin AAR expect). Replaces build-android-bolt.sh (boltffi pack +
-      # clang-shim relink + patchelf); the .so is a clean one-link output.
+      # Kotlin AAR expect). The target mirrors boltffi's JNI relink inside the
+      # Bazel graph; the .so is a clean one-link output.
       - name: Build Android jniLibs (Bazel AAR)
         env:
           BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
@@ -144,16 +142,31 @@ jobs:
           # bindings/kotlin/build.gradle.kts). i686/x86 is built but not
           # packaged, so it's not verified here.
           for abi in armeabi-v7a arm64-v8a x86_64; do
-            SO="$SO_BASE/$abi/libxybrid-bolt.so"
+            SO="$SO_BASE/$abi/libxybrid_bolt.so"
             if [ ! -f "$SO" ]; then
               echo "Error: $SO not found"
               exit 1
             fi
             echo "OK: $SO ($(du -h "$SO" | cut -f1))"
+            # The Kotlin surface is made of JVM `external fun`s, so a plain
+            # Bolt C ABI is insufficient. Require every generated Java_* JNI
+            # trampoline to survive the final link and symbol stripping.
+            expected_jni="$(grep -c 'JNICALL Java_ai_xybrid_Native_' bindings/kotlin/bazel/jni/jni_glue.c)"
+            dynamic_symbols="$("$READELF" --dyn-syms --wide "$SO")"
+            actual_jni="$(grep -c 'Java_ai_xybrid_Native_' <<< "$dynamic_symbols" || true)"
+            if [ "$actual_jni" -ne "$expected_jni" ]; then
+              echo "Error: $SO exports $actual_jni/$expected_jni generated JNI entry points"
+              exit 1
+            fi
+            if ! grep -F 'boltffi_function_xybrid_bolt_set_binding' <<< "$dynamic_symbols" > /dev/null; then
+              echo "Error: $SO is missing the underlying Bolt C ABI"
+              exit 1
+            fi
+            echo "  JNI exports: $actual_jni/$expected_jni present"
             # libc++_shared must be a declared dependency. It's added at link
-            # time by the clang shim in build-android-bolt.sh (no patchelf), so
-            # the .so is a clean linker output that survives a consumer's strip.
-            # Guard against a shim regression that would dlopen-fail on device.
+            # time by the Bazel JNI link (no patchelf), so the .so is a clean
+            # linker output that survives a consumer's strip. Guard against a
+            # link regression that would dlopen-fail on device.
             if ! "$READELF" -d "$SO" | grep -q 'libc++_shared.so'; then
               echo "Error: $SO is missing libc++_shared.so in DT_NEEDED"
               exit 1
@@ -207,11 +220,11 @@ jobs:
           NDKBIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           SRC="bindings/kotlin/libs/x86_64"
           mkdir -p dlopen-gate
-          cp "$SRC/libxybrid-bolt.so" "$SRC/libc++_shared.so" "$SRC/libonnxruntime.so" dlopen-gate/
+          cp "$SRC/libxybrid_bolt.so" "$SRC/libc++_shared.so" "$SRC/libonnxruntime.so" dlopen-gate/
           # AGP-style strip — the exact step that corrupted the old patchelf'd
           # .so. The fixed clean .so must still dlopen after it.
-          cp "$SRC/libxybrid-bolt.so" dlopen-gate/libxybrid-bolt.stripped.so
-          "$NDKBIN/llvm-strip" --strip-all dlopen-gate/libxybrid-bolt.stripped.so
+          cp "$SRC/libxybrid_bolt.so" dlopen-gate/libxybrid_bolt.stripped.so
+          "$NDKBIN/llvm-strip" --strip-all dlopen-gate/libxybrid_bolt.stripped.so
           # Probe executable for the emulator's x86_64 ABI.
           "$NDKBIN/x86_64-linux-android24-clang" \
             tools/scripts/android-dlopen-probe.c -o dlopen-gate/android-dlopen-probe
@@ -264,7 +277,7 @@ jobs:
         working-directory: bindings/kotlin
         run: ./gradlew compileReleaseKotlin compileDebugKotlin testDebugUnitTest --console=plain --stacktrace
 
-  # The authoritative gate: actually dlopen the shipped libxybrid-bolt.so on an
+  # The authoritative gate: actually dlopen the shipped libxybrid_bolt.so on an
   # emulator — as built AND after an AGP-style strip. This is the regression
   # guard the strip-fragility bug needed and never had: nothing in CI ever
   # loaded the bolt .so in a process, so a .so that passed `readelf` but failed
@@ -332,7 +345,7 @@ jobs:
 
       # api-level 35 = Android 15 bionic, which is strict enough to reject the
       # DT_GNU_HASH corruption this gate guards against.
-      - name: dlopen libxybrid-bolt.so (as built + after AGP strip)
+      - name: dlopen libxybrid_bolt.so (as built + after AGP strip)
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
           api-level: 35
