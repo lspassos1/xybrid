@@ -153,7 +153,7 @@ object Xybrid {
     @JvmStatic
     fun extractedModelIds(): List<String> = ai.xybrid.cacheListExtractedModelIds()
 
-    /** Remove expired entries and return how many physical entries were deleted. */
+    /** Throws until persistent cache retention is supported. Use per-model eviction. */
     @JvmStatic
     fun cleanExpiredModelCache(): UInt = ai.xybrid.cacheCleanExpired()
 

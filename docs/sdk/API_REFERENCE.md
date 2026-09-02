@@ -93,14 +93,15 @@ class Xybrid {
   });
 
   // Cache
-  static CacheStatus modelCacheStatus();
-  static List<CacheEntry> modelCacheEntries();
-  static bool hasCachedModelData(String modelId);
-  static String? cachedModelPath(String modelId);
-  static List<String> extractedModelIds();
-  static int cleanExpiredModelCache();
-  static int removeCachedModel(String modelId);
-  static int clearModelCache();
+  static Future<CacheStatus> modelCacheStatus();
+  static Future<List<CacheEntry>> modelCacheEntries();
+  static Future<bool> hasCachedModelData(String modelId);
+  static Future<String?> cachedModelPath(String modelId);
+  static Future<List<String>> extractedModelIds();
+  // Currently reports an error: persistent retention is not implemented.
+  static Future<int> cleanExpiredModelCache();
+  static Future<int> removeCachedModel(String modelId);
+  static Future<int> clearModelCache();
 
   // Compatibility check: extracted and ready to load, not merely downloaded
   static bool isModelCached(String modelId);

@@ -298,23 +298,23 @@ abstract class XybridRustLibApi extends BaseApi {
   void crateApiDeviceXybridDeviceSetThermalState(
       {required FfiThermalState state});
 
-  List<FfiCacheEntry> crateApiSdkClientXybridSdkClientCacheEntries();
+  Future<List<FfiCacheEntry>> crateApiSdkClientXybridSdkClientCacheEntries();
 
-  FfiCacheStatus crateApiSdkClientXybridSdkClientCacheStatus();
+  Future<FfiCacheStatus> crateApiSdkClientXybridSdkClientCacheStatus();
 
-  String? crateApiSdkClientXybridSdkClientCachedModelPath(
+  Future<String?> crateApiSdkClientXybridSdkClientCachedModelPath(
       {required String modelId});
 
-  int crateApiSdkClientXybridSdkClientCleanExpiredCache();
+  Future<int> crateApiSdkClientXybridSdkClientCleanExpiredCache();
 
-  int crateApiSdkClientXybridSdkClientClearModelCache();
+  Future<int> crateApiSdkClientXybridSdkClientClearModelCache();
 
   void crateApiSdkClientXybridSdkClientConfigurePlatformTelemetry(
       {required String apiKey, String? ingestUrl, String? resourceTelemetry});
 
   void crateApiSdkClientXybridSdkClientFlushPlatformTelemetry();
 
-  bool crateApiSdkClientXybridSdkClientHasCachedModelData(
+  Future<bool> crateApiSdkClientXybridSdkClientHasCachedModelData(
       {required String modelId});
 
   void crateApiSdkClientXybridSdkClientInitSdkCacheDir(
@@ -331,11 +331,11 @@ abstract class XybridRustLibApi extends BaseApi {
 
   bool crateApiSdkClientXybridSdkClientIsTelemetryInitialized();
 
-  List<String> crateApiSdkClientXybridSdkClientListExtractedModelIds();
+  Future<List<String>> crateApiSdkClientXybridSdkClientListExtractedModelIds();
 
   int crateApiSdkClientXybridSdkClientReleaseMemory();
 
-  int crateApiSdkClientXybridSdkClientRemoveCachedModel(
+  Future<int> crateApiSdkClientXybridSdkClientRemoveCachedModel(
       {required String modelId});
 
   List<String> crateApiSdkClientXybridSdkClientRuntimeFeatures();
@@ -2289,11 +2289,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
       );
 
   @override
-  List<FfiCacheEntry> crateApiSdkClientXybridSdkClientCacheEntries() {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+  Future<List<FfiCacheEntry>> crateApiSdkClientXybridSdkClientCacheEntries() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 66)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 66, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_ffi_cache_entry,
@@ -2312,11 +2313,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
       );
 
   @override
-  FfiCacheStatus crateApiSdkClientXybridSdkClientCacheStatus() {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+  Future<FfiCacheStatus> crateApiSdkClientXybridSdkClientCacheStatus() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 67)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 67, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_ffi_cache_status,
@@ -2335,13 +2337,14 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
       );
 
   @override
-  String? crateApiSdkClientXybridSdkClientCachedModelPath(
+  Future<String?> crateApiSdkClientXybridSdkClientCachedModelPath(
       {required String modelId}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(modelId, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 68)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 68, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_opt_String,
@@ -2360,11 +2363,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
       );
 
   @override
-  int crateApiSdkClientXybridSdkClientCleanExpiredCache() {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+  Future<int> crateApiSdkClientXybridSdkClientCleanExpiredCache() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 69)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 69, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_u_32,
@@ -2384,11 +2388,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
           );
 
   @override
-  int crateApiSdkClientXybridSdkClientClearModelCache() {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+  Future<int> crateApiSdkClientXybridSdkClientClearModelCache() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 70)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 70, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_u_32,
@@ -2461,13 +2466,14 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
           );
 
   @override
-  bool crateApiSdkClientXybridSdkClientHasCachedModelData(
+  Future<bool> crateApiSdkClientXybridSdkClientHasCachedModelData(
       {required String modelId}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(modelId, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 73)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 73, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_bool,
@@ -2637,11 +2643,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
           );
 
   @override
-  List<String> crateApiSdkClientXybridSdkClientListExtractedModelIds() {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+  Future<List<String>> crateApiSdkClientXybridSdkClientListExtractedModelIds() {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 80)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 80, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_list_String,
@@ -2685,13 +2692,14 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
       );
 
   @override
-  int crateApiSdkClientXybridSdkClientRemoveCachedModel(
+  Future<int> crateApiSdkClientXybridSdkClientRemoveCachedModel(
       {required String modelId}) {
-    return handler.executeSync(SyncTask(
-      callFfi: () {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_String(modelId, serializer);
-        return pdeCallFfi(generalizedFrbRustBinding, serializer, funcId: 82)!;
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 82, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_u_32,

@@ -86,6 +86,7 @@ classes:
         status: { dart: implemented, kotlin: planned, swift: planned, csharp: planned }
       modelCacheStatus:
         return: CacheStatus
+        notes: "All new cache operations return Futures on Dart; filesystem work runs on the FRB worker pool. Other bindings are synchronous."
         status: { dart: implemented, kotlin: implemented, swift: implemented, csharp: implemented }
       modelCacheEntries:
         return: "List<CacheEntry>"
@@ -104,6 +105,7 @@ classes:
         status: { dart: implemented, kotlin: implemented, swift: implemented, csharp: implemented }
       cleanExpiredModelCache:
         return: int
+        notes: "Reserved API: currently reports ConfigError without modifying storage because the SDK does not persist retention metadata. Use explicit per-model eviction."
         status: { dart: implemented, kotlin: implemented, swift: implemented, csharp: implemented }
       removeCachedModel:
         params: [{ name: modelId, type: String }]

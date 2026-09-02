@@ -11,10 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Applications can manage model storage from every binding.** Swift, Kotlin,
   Python, Unity C#, and Dart now expose aggregate cache status, physical entry
-  details, preferred paths, ready-model IDs, expired-entry cleanup, per-model
-  deletion, and full cache clearing. Per-model deletion validates identifiers
+  details, preferred paths, ready-model IDs, per-model deletion, and full cache
+  clearing. Lookups and per-model deletion validate identifiers
   before constructing paths and removes registry, extraction, direct Hugging
   Face, and owned Hub-cache data without touching sibling models (#505).
+  Ready counts exclude incomplete extractions. Dart cache operations run off
+  the UI isolate. Expiry cleanup explicitly reports unsupported retention
+  rather than silently returning zero or deleting local models by file age.
 
 ### Planned
 

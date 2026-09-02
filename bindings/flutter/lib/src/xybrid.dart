@@ -245,47 +245,51 @@ class Xybrid {
   }
 
   /// Returns aggregate storage usage across every managed model-cache area.
-  static CacheStatus modelCacheStatus() => XybridSdkClient.cacheStatus();
+  static Future<CacheStatus> modelCacheStatus() =>
+      XybridSdkClient.cacheStatus();
 
   /// Lists physical entries across registry, extraction, and Hugging Face caches.
   ///
   /// A model can appear more than once when its downloaded archive and extracted
   /// runtime directory are both present.
-  static List<CacheEntry> modelCacheEntries() => XybridSdkClient.cacheEntries();
+  static Future<List<CacheEntry>> modelCacheEntries() =>
+      XybridSdkClient.cacheEntries();
 
   /// Returns whether [modelId] occupies any managed model-cache entry.
   ///
   /// This includes archives and shared downloads that may still need extraction.
   /// Use [isModelCached] to ask whether a registry model is ready to load.
-  static bool hasCachedModelData(String modelId) =>
+  static Future<bool> hasCachedModelData(String modelId) =>
       XybridSdkClient.hasCachedModelData(modelId: modelId);
 
   /// Returns a preferred local path for [modelId], or `null` when absent.
   ///
   /// Presence does not necessarily mean the model is extracted and ready. Use
   /// [isModelCached] when a ready-to-load check is required.
-  static String? cachedModelPath(String modelId) =>
+  static Future<String?> cachedModelPath(String modelId) =>
       XybridSdkClient.cachedModelPath(modelId: modelId);
 
   /// Lists model IDs that are extracted, validated, and ready to run offline.
-  static List<String> extractedModelIds() =>
+  static Future<List<String>> extractedModelIds() =>
       XybridSdkClient.listExtractedModelIds();
 
-  /// Removes expired entries and returns how many physical entries were deleted.
-  static int cleanExpiredModelCache() => XybridSdkClient.cleanExpiredCache();
+  /// Reports an error until persistent cache retention is supported.
+  /// Use [removeCachedModel] for explicit eviction instead.
+  static Future<int> cleanExpiredModelCache() =>
+      XybridSdkClient.cleanExpiredCache();
 
   /// Removes all managed cache entries for [modelId].
   ///
   /// Returns how many physical entries were deleted. Do not call this while the
   /// same model is loading.
-  static int removeCachedModel(String modelId) =>
+  static Future<int> removeCachedModel(String modelId) =>
       XybridSdkClient.removeCachedModel(modelId: modelId);
 
   /// Clears all managed model-cache storage.
   ///
   /// Returns how many physical entries were deleted. Do not call this while any
   /// model is loading.
-  static int clearModelCache() => XybridSdkClient.clearModelCache();
+  static Future<int> clearModelCache() => XybridSdkClient.clearModelCache();
 
   /// Legacy telemetry entry point. Prefer passing `apiKey` (and, for a
   /// self-hosted dashboard, `ingestUrl`) to [init] — that starts the

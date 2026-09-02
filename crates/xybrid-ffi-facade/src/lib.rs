@@ -1946,12 +1946,7 @@ fn cache_status_from(manager: &sdk::CacheManager) -> Result<CacheStatus> {
         .map(|entry| entry.model_id.as_str())
         .collect::<HashSet<_>>()
         .len();
-    let extracted_model_count = entries
-        .iter()
-        .filter(|entry| entry.location == CacheEntryLocation::Extracted)
-        .map(|entry| entry.model_id.as_str())
-        .collect::<HashSet<_>>()
-        .len();
+    let extracted_model_count = manager.list_extracted_model_ids().len();
 
     Ok(CacheStatus {
         total_size_bytes: entries.iter().map(|entry| entry.size_bytes).sum(),
@@ -1992,9 +1987,16 @@ pub fn cache_list_extracted_model_ids() -> Result<Vec<String>> {
     Ok(open_cache()?.list_extracted_model_ids())
 }
 
-/// Removes expired cache entries and returns how many were deleted.
+/// Reserved for expired-entry cleanup once retention metadata is persisted.
+///
+/// # Errors
+/// Returns `ConfigError`: the SDK currently classifies all scanned entries as
+/// local and cannot identify expired downloads after a restart. Use explicit
+/// per-model eviction instead. This operation does not change the cache.
 pub fn cache_clean_expired() -> Result<u32> {
-    open_cache()?.clean_expired().map_err(Error::from)
+    Err(Error::ConfigError {
+        message: "cache expiry is unavailable until retention metadata is persisted; use per-model eviction instead".into(),
+    })
 }
 
 /// Removes every managed cache entry for one model.
@@ -2480,8 +2482,51 @@ mod tests {
         assert_eq!(status.total_size_bytes, 8);
         assert_eq!(status.entry_count, 2);
         assert_eq!(status.model_count, 1);
-        assert_eq!(status.extracted_model_count, 1);
+        assert_eq!(status.extracted_model_count, 0);
         assert_eq!(status.cache_root, cache_root.to_string_lossy());
+    }
+
+    #[test]
+    fn cache_ready_count_tracks_validation_not_physical_directories() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("cache");
+        let extracted = root.join("extracted/ready");
+        std::fs::create_dir_all(&extracted).unwrap();
+        std::fs::write(
+            extracted.join("model_metadata.json"),
+            r#"{
+            "model_id":"ready", "version":"1.0",
+            "execution_template":{"type":"Onnx","model_file":"model.onnx"},
+            "preprocessing":[],"postprocessing":[],"files":["model.onnx"],"metadata":{}
+        }"#,
+        )
+        .unwrap();
+        let manager = sdk::CacheManager::with_dir(root.join("models")).unwrap();
+        assert_eq!(
+            cache_status_from(&manager).unwrap().extracted_model_count,
+            0
+        );
+
+        std::fs::write(extracted.join("model.onnx"), b"model").unwrap();
+        assert_eq!(manager.list_extracted_model_ids(), vec!["ready"]);
+        assert_eq!(
+            cache_status_from(&manager).unwrap().extracted_model_count,
+            1
+        );
+
+        std::fs::remove_file(extracted.join("model.onnx")).unwrap();
+        let status = cache_status_from(&manager).unwrap();
+        assert_eq!(status.extracted_model_count, 0);
+        assert_eq!(status.entry_count, 1);
+        assert!(status.total_size_bytes > 0);
+    }
+
+    #[test]
+    fn cache_expiry_reports_unavailable_instead_of_successful_noop() {
+        assert!(matches!(
+            cache_clean_expired(),
+            Err(Error::ConfigError { .. })
+        ));
     }
 
     #[test]

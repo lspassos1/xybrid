@@ -16,26 +16,26 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner<XybridSdkClient>>
 abstract class XybridSdkClient implements RustOpaqueInterface {
   /// Lists every physical model entry occupying managed cache storage.
-  static List<FfiCacheEntry> cacheEntries() =>
+  static Future<List<FfiCacheEntry>> cacheEntries() =>
       XybridRustLib.instance.api.crateApiSdkClientXybridSdkClientCacheEntries();
 
   /// Returns aggregate storage usage across every managed model-cache area.
-  static FfiCacheStatus cacheStatus() =>
+  static Future<FfiCacheStatus> cacheStatus() =>
       XybridRustLib.instance.api.crateApiSdkClientXybridSdkClientCacheStatus();
 
   /// Resolves the preferred local cache path for a model, if present.
-  static String? cachedModelPath({required String modelId}) =>
+  static Future<String?> cachedModelPath({required String modelId}) =>
       XybridRustLib.instance.api
           .crateApiSdkClientXybridSdkClientCachedModelPath(modelId: modelId);
 
-  /// Removes expired cache entries and returns how many were deleted.
-  static int cleanExpiredCache() => XybridRustLib.instance.api
+  /// Reports an error until persistent cache retention is supported.
+  static Future<int> cleanExpiredCache() => XybridRustLib.instance.api
       .crateApiSdkClientXybridSdkClientCleanExpiredCache();
 
   /// Clears all managed model-cache storage.
   ///
   /// Do not call concurrently with any model load.
-  static int clearModelCache() => XybridRustLib.instance.api
+  static Future<int> clearModelCache() => XybridRustLib.instance.api
       .crateApiSdkClientXybridSdkClientClearModelCache();
 
   /// Start the platform telemetry exporter from the bundled
@@ -60,7 +60,7 @@ abstract class XybridSdkClient implements RustOpaqueInterface {
       .crateApiSdkClientXybridSdkClientFlushPlatformTelemetry();
 
   /// Returns whether a model occupies any managed model-cache entry.
-  static bool hasCachedModelData({required String modelId}) =>
+  static Future<bool> hasCachedModelData({required String modelId}) =>
       XybridRustLib.instance.api
           .crateApiSdkClientXybridSdkClientHasCachedModelData(modelId: modelId);
 
@@ -115,8 +115,9 @@ abstract class XybridSdkClient implements RustOpaqueInterface {
       .crateApiSdkClientXybridSdkClientIsTelemetryInitialized();
 
   /// Lists model IDs extracted, validated, and ready to run offline.
-  static List<String> listExtractedModelIds() => XybridRustLib.instance.api
-      .crateApiSdkClientXybridSdkClientListExtractedModelIds();
+  static Future<List<String>> listExtractedModelIds() =>
+      XybridRustLib.instance.api
+          .crateApiSdkClientXybridSdkClientListExtractedModelIds();
 
   /// Release every idle loaded model's memory; returns how many were released.
   ///
@@ -130,7 +131,7 @@ abstract class XybridSdkClient implements RustOpaqueInterface {
   /// Removes every managed cache entry for one model.
   ///
   /// Do not call concurrently with a load of the same model.
-  static int removeCachedModel({required String modelId}) =>
+  static Future<int> removeCachedModel({required String modelId}) =>
       XybridRustLib.instance.api
           .crateApiSdkClientXybridSdkClientRemoveCachedModel(modelId: modelId);
 

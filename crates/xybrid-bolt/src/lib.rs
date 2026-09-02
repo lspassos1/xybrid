@@ -987,7 +987,7 @@ pub fn cache_list_extracted_model_ids() -> Result<Vec<String>, XybridError> {
     facade::cache_list_extracted_model_ids().map_err(XybridError::from)
 }
 
-/// Removes expired cache entries and returns how many were deleted.
+/// Reports a configuration error until persistent cache retention is supported.
 #[export]
 pub fn cache_clean_expired() -> Result<u32, XybridError> {
     facade::cache_clean_expired().map_err(XybridError::from)

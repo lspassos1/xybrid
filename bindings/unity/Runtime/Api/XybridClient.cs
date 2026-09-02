@@ -150,7 +150,7 @@ namespace Xybrid
             return CacheCall(() => XybridBolt.XybridBolt.CacheListExtractedModelIds());
         }
 
-        /// <summary>Removes expired entries and returns how many were deleted.</summary>
+        /// <summary>Throws until persistent retention is supported. Use per-model eviction.</summary>
         public static uint CleanExpiredModelCache()
         {
             return CacheCall(() => XybridBolt.XybridBolt.CacheCleanExpired());

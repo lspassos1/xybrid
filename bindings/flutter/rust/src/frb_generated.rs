@@ -2949,15 +2949,16 @@ fn wire__crate__api__device__XybridDevice_set_thermal_state_impl(
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_cache_entries_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_cache_entries",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -2970,23 +2971,26 @@ fn wire__crate__api__sdk_client__XybridSdkClient_cache_entries_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok = crate::api::sdk_client::XybridSdkClient::cache_entries()?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::sdk_client::XybridSdkClient::cache_entries()?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_cache_status_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_cache_status",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -2999,23 +3003,26 @@ fn wire__crate__api__sdk_client__XybridSdkClient_cache_status_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok = crate::api::sdk_client::XybridSdkClient::cache_status()?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::sdk_client::XybridSdkClient::cache_status()?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_cached_model_path_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_cached_model_path",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3029,24 +3036,27 @@ fn wire__crate__api__sdk_client__XybridSdkClient_cached_model_path_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_model_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok =
-                    crate::api::sdk_client::XybridSdkClient::cached_model_path(api_model_id)?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok =
+                        crate::api::sdk_client::XybridSdkClient::cached_model_path(api_model_id)?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_clean_expired_cache",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3059,23 +3069,26 @@ fn wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok = crate::api::sdk_client::XybridSdkClient::clean_expired_cache()?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::sdk_client::XybridSdkClient::clean_expired_cache()?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_clear_model_cache",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3088,10 +3101,12 @@ fn wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok = crate::api::sdk_client::XybridSdkClient::clear_model_cache()?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::sdk_client::XybridSdkClient::clear_model_cache()?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -3165,15 +3180,16 @@ fn wire__crate__api__sdk_client__XybridSdkClient_flush_platform_telemetry_impl(
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_has_cached_model_data",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3187,11 +3203,14 @@ fn wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_model_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok =
-                    crate::api::sdk_client::XybridSdkClient::has_cached_model_data(api_model_id)?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok = crate::api::sdk_client::XybridSdkClient::has_cached_model_data(
+                        api_model_id,
+                    )?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -3389,15 +3408,16 @@ fn wire__crate__api__sdk_client__XybridSdkClient_is_telemetry_initialized_impl(
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_list_extracted_model_ids",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3410,11 +3430,13 @@ fn wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
             let mut deserializer =
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok =
-                    crate::api::sdk_client::XybridSdkClient::list_extracted_model_ids()?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok =
+                        crate::api::sdk_client::XybridSdkClient::list_extracted_model_ids()?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -3449,15 +3471,16 @@ fn wire__crate__api__sdk_client__XybridSdkClient_release_memory_impl(
     )
 }
 fn wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
+    port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
     rust_vec_len_: i32,
     data_len_: i32,
-) -> flutter_rust_bridge::for_generated::WireSyncRust2DartSse {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_sync::<flutter_rust_bridge::for_generated::SseCodec, _>(
+) {
+    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
         flutter_rust_bridge::for_generated::TaskInfo {
             debug_name: "XybridSdkClient_remove_cached_model",
-            port: None,
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Sync,
+            port: Some(port_),
+            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
         },
         move || {
             let message = unsafe {
@@ -3471,11 +3494,13 @@ fn wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
                 flutter_rust_bridge::for_generated::SseDeserializer::new(message);
             let api_model_id = <String>::sse_decode(&mut deserializer);
             deserializer.end();
-            transform_result_sse::<_, String>((move || {
-                let output_ok =
-                    crate::api::sdk_client::XybridSdkClient::remove_cached_model(api_model_id)?;
-                Ok(output_ok)
-            })())
+            move |context| {
+                transform_result_sse::<_, String>((move || {
+                    let output_ok =
+                        crate::api::sdk_client::XybridSdkClient::remove_cached_model(api_model_id)?;
+                    Ok(output_ok)
+                })())
+            }
         },
     )
 }
@@ -5013,6 +5038,54 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
+        66 => wire__crate__api__sdk_client__XybridSdkClient_cache_entries_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        67 => wire__crate__api__sdk_client__XybridSdkClient_cache_status_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        68 => wire__crate__api__sdk_client__XybridSdkClient_cached_model_path_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        69 => wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        70 => wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        73 => wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        80 => wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
+        82 => wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
+            port,
+            ptr,
+            rust_vec_len,
+            data_len,
+        ),
         _ => unreachable!(),
     }
 }
@@ -5167,42 +5240,12 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        66 => wire__crate__api__sdk_client__XybridSdkClient_cache_entries_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        67 => wire__crate__api__sdk_client__XybridSdkClient_cache_status_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        68 => wire__crate__api__sdk_client__XybridSdkClient_cached_model_path_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        69 => wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        70 => wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
         71 => wire__crate__api__sdk_client__XybridSdkClient_configure_platform_telemetry_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
         72 => wire__crate__api__sdk_client__XybridSdkClient_flush_platform_telemetry_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        73 => wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
             ptr,
             rust_vec_len,
             data_len,
@@ -5237,17 +5280,7 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        80 => wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
         81 => wire__crate__api__sdk_client__XybridSdkClient_release_memory_impl(
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        82 => wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
             ptr,
             rust_vec_len,
             data_len,

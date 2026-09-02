@@ -3,8 +3,10 @@
 ## Unreleased
 
 * Added: complete model-cache management through `Xybrid`, including aggregate
-  status, physical entries, preferred paths, ready-model IDs, expired cleanup,
-  per-model deletion, and full clearing. The existing `isModelCached` retains
+  status, physical entries, preferred paths, ready-model IDs,
+  per-model deletion, and full clearing. These new operations return Futures
+  and run off the UI isolate. Expiry cleanup reports an error until persistent
+  retention is supported. The existing `isModelCached` retains
   its ready-to-load meaning; `hasCachedModelData` also counts archives and
   shared downloads that still need extraction (xybrid-ai/xybrid#505)
 

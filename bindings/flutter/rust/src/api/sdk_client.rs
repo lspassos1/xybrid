@@ -141,7 +141,8 @@ impl XybridSdkClient {
     }
 
     /// Returns aggregate storage usage across every managed model-cache area.
-    #[frb(sync)]
+    // Default FRB dispatch runs these filesystem operations on its worker pool.
+    // Do not mark them sync: large caches must not block the Dart UI isolate.
     pub fn cache_status() -> Result<FfiCacheStatus, String> {
         facade::cache_status()
             .map(Into::into)
@@ -149,7 +150,6 @@ impl XybridSdkClient {
     }
 
     /// Lists every physical model entry occupying managed cache storage.
-    #[frb(sync)]
     pub fn cache_entries() -> Result<Vec<FfiCacheEntry>, String> {
         facade::cache_entries()
             .map(|entries| entries.into_iter().map(Into::into).collect())
@@ -157,25 +157,21 @@ impl XybridSdkClient {
     }
 
     /// Returns whether a model occupies any managed model-cache entry.
-    #[frb(sync)]
     pub fn has_cached_model_data(model_id: String) -> Result<bool, String> {
         facade::cache_is_model_cached(model_id).map_err(|error| error.to_string())
     }
 
     /// Resolves the preferred local cache path for a model, if present.
-    #[frb(sync)]
     pub fn cached_model_path(model_id: String) -> Result<Option<String>, String> {
         facade::cache_model_path(model_id).map_err(|error| error.to_string())
     }
 
     /// Lists model IDs extracted, validated, and ready to run offline.
-    #[frb(sync)]
     pub fn list_extracted_model_ids() -> Result<Vec<String>, String> {
         facade::cache_list_extracted_model_ids().map_err(|error| error.to_string())
     }
 
-    /// Removes expired cache entries and returns how many were deleted.
-    #[frb(sync)]
+    /// Reports an error until persistent cache retention is supported.
     pub fn clean_expired_cache() -> Result<u32, String> {
         facade::cache_clean_expired().map_err(|error| error.to_string())
     }
@@ -183,7 +179,6 @@ impl XybridSdkClient {
     /// Removes every managed cache entry for one model.
     ///
     /// Do not call concurrently with a load of the same model.
-    #[frb(sync)]
     pub fn remove_cached_model(model_id: String) -> Result<u32, String> {
         facade::cache_remove_model(model_id).map_err(|error| error.to_string())
     }
@@ -191,7 +186,6 @@ impl XybridSdkClient {
     /// Clears all managed model-cache storage.
     ///
     /// Do not call concurrently with any model load.
-    #[frb(sync)]
     pub fn clear_model_cache() -> Result<u32, String> {
         facade::cache_clear().map_err(|error| error.to_string())
     }

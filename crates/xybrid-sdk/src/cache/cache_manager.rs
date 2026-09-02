@@ -380,7 +380,11 @@ impl CacheManager {
     /// preferred, followed by registry bundles and shared Hugging Face cache
     /// entries. Returns `None` when the model occupies no managed cache entry.
     /// This operation never touches the network.
+    ///
+    /// # Errors
+    /// Returns an error for absolute paths or traversal instead of model IDs.
     pub fn cached_model_path(&self, model_id: &str) -> Result<Option<PathBuf>, SdkError> {
+        validate_cache_model_id(model_id)?;
         if let Some(path) = self.existing_extraction_dir(model_id) {
             return Ok(Some(path));
         }
@@ -699,6 +703,10 @@ impl CacheManager {
     ///
     /// Removes cloud models that have exceeded their TTL.
     ///
+    /// Retention metadata is not persisted yet: a newly opened manager treats
+    /// every scanned bundle as local, so this currently removes no disk entries.
+    /// Use explicit per-model eviction until persistent retention is supported.
+    ///
     /// # Returns
     ///
     /// Number of entries removed
@@ -744,16 +752,7 @@ impl CacheManager {
     /// Not safe to run concurrently with a load of the same model: it removes
     /// whole cache directories that an in-flight extraction may be writing to.
     pub(crate) fn clear_model_roots(&mut self, model_id: &str) -> Result<u32, SdkError> {
-        if model_id.is_empty()
-            || !Path::new(model_id)
-                .components()
-                .all(|component| matches!(component, Component::Normal(_)))
-        {
-            return Err(SdkError::cache(format!(
-                "Invalid cache model identifier: {}",
-                model_id
-            )));
-        }
+        validate_cache_model_id(model_id)?;
 
         let matching_cache_entries: Vec<_> = self
             .layout()
@@ -859,6 +858,24 @@ impl CacheManager {
     }
 }
 
+/// Keep lookup and eviction within the same model-ID namespace on every host.
+fn validate_cache_model_id(model_id: &str) -> Result<(), SdkError> {
+    if model_id.is_empty()
+        || model_id.contains(['\\', ':', '\0'])
+        || model_id
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !Path::new(model_id)
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+    {
+        return Err(SdkError::cache(format!(
+            "Invalid cache model identifier: {model_id}"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,6 +959,46 @@ mod tests {
             Some(extracted_dir)
         );
         assert!(!manager.is_model_cached("missing").unwrap());
+    }
+
+    #[test]
+    fn cache_lookup_and_eviction_reject_paths_outside_managed_storage() {
+        let temp = TempDir::new().unwrap();
+        let outside = temp.path().join("outside");
+        write_ready_extracted_model(&outside, "outside");
+        let mut manager = CacheManager::with_dir(temp.path().join("cache/models")).unwrap();
+
+        for id in [
+            outside.to_str().unwrap(),
+            "",
+            ".",
+            "..",
+            "../outside",
+            "owner/../../outside",
+            "owner/./repo",
+            "owner//repo",
+            "owner/",
+            r"C:\outside",
+            r"..\outside",
+            r"\\server\share",
+            "bad\0id",
+        ] {
+            assert!(
+                manager.cached_model_path(id).is_err(),
+                "lookup accepted {id:?}"
+            );
+            assert!(
+                manager.is_model_cached(id).is_err(),
+                "presence accepted {id:?}"
+            );
+            assert!(manager.clear_model(id).is_err(), "eviction accepted {id:?}");
+        }
+        for id in ["model", "model@1.0", "owner/repo", "owner/repo@revision"] {
+            assert_eq!(manager.cached_model_path(id).unwrap(), None);
+            assert!(!manager.is_model_cached(id).unwrap());
+        }
+        assert!(manager.cache_entries().unwrap().is_empty());
+        assert!(outside.join("model.onnx").is_file());
     }
 
     #[test]

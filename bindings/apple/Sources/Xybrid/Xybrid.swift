@@ -135,7 +135,7 @@ public enum Xybrid {
         try cacheListExtractedModelIds()
     }
 
-    /// Remove expired entries and return the number of physical entries deleted.
+    /// Throws until persistent cache retention is supported. Use per-model eviction.
     public static func cleanExpiredModelCache() throws -> UInt32 {
         try cacheCleanExpired()
     }
