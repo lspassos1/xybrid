@@ -11,6 +11,7 @@ on:
       - 'crates/xybrid-sdk/**'
       - 'tools/scripts/android-dlopen-gate.sh'
       - 'tools/scripts/android-dlopen-probe.c'
+      - 'tools/scripts/verify_android_jni.py'
       - 'xtask/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -35,6 +36,7 @@ on:
       - 'crates/xybrid-sdk/**'
       - 'tools/scripts/android-dlopen-gate.sh'
       - 'tools/scripts/android-dlopen-probe.c'
+      - 'tools/scripts/verify_android_jni.py'
       - 'xtask/**'
       - 'Cargo.lock'
       - 'Cargo.toml'
@@ -151,18 +153,8 @@ jobs:
             # The Kotlin surface is made of JVM `external fun`s, so a plain
             # Bolt C ABI is insufficient. Require every generated Java_* JNI
             # trampoline to survive the final link and symbol stripping.
-            expected_jni="$(grep -c 'JNICALL Java_ai_xybrid_Native_' bindings/kotlin/bazel/jni/jni_glue.c)"
-            dynamic_symbols="$("$READELF" --dyn-syms --wide "$SO")"
-            actual_jni="$(grep -c 'Java_ai_xybrid_Native_' <<< "$dynamic_symbols" || true)"
-            if [ "$actual_jni" -ne "$expected_jni" ]; then
-              echo "Error: $SO exports $actual_jni/$expected_jni generated JNI entry points"
-              exit 1
-            fi
-            if ! grep -F 'boltffi_function_xybrid_bolt_set_binding' <<< "$dynamic_symbols" > /dev/null; then
-              echo "Error: $SO is missing the underlying Bolt C ABI"
-              exit 1
-            fi
-            echo "  JNI exports: $actual_jni/$expected_jni present"
+            python3 tools/scripts/verify_android_jni.py --readelf "$READELF" \
+              --glue bindings/kotlin/bazel/jni/jni_glue.c "$SO"
             # libc++_shared must be a declared dependency. It's added at link
             # time by the Bazel JNI link (no patchelf), so the .so is a clean
             # linker output that survives a consumer's strip. Guard against a
@@ -220,11 +212,14 @@ jobs:
           NDKBIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
           SRC="bindings/kotlin/libs/x86_64"
           mkdir -p dlopen-gate
+          cp bazel-bin/bindings/kotlin/xybrid-kotlin.aar dlopen-gate/
           cp "$SRC/libxybrid_bolt.so" "$SRC/libc++_shared.so" "$SRC/libonnxruntime.so" dlopen-gate/
           # AGP-style strip — the exact step that corrupted the old patchelf'd
           # .so. The fixed clean .so must still dlopen after it.
           cp "$SRC/libxybrid_bolt.so" dlopen-gate/libxybrid_bolt.stripped.so
           "$NDKBIN/llvm-strip" --strip-all dlopen-gate/libxybrid_bolt.stripped.so
+          python3 tools/scripts/verify_android_jni.py --readelf "$NDKBIN/llvm-readelf" \
+            --glue bindings/kotlin/bazel/jni/jni_glue.c dlopen-gate/libxybrid_bolt.stripped.so
           # Probe executable for the emulator's x86_64 ABI.
           "$NDKBIN/x86_64-linux-android24-clang" \
             tools/scripts/android-dlopen-probe.c -o dlopen-gate/android-dlopen-probe
@@ -308,6 +303,15 @@ jobs:
           name: android-dlopen-gate
           path: dlopen-gate
 
+      - uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Stage the shipped AAR for the instrumented consumer
+        run: |
+          mkdir -p bindings/kotlin/consumer-smoke/app/libs
+          cp dlopen-gate/xybrid-kotlin.aar bindings/kotlin/consumer-smoke/app/libs/
+
       # `android-emulator-runner` installs the "latest emulator" with a single,
       # un-retried `sdkmanager --install emulator` call. That download
       # intermittently lands corrupt on the runner and fails the whole job with
@@ -345,7 +349,7 @@ jobs:
 
       # api-level 35 = Android 15 bionic, which is strict enough to reject the
       # DT_GNU_HASH corruption this gate guards against.
-      - name: dlopen libxybrid_bolt.so (as built + after AGP strip)
+      - name: Load native libraries and invoke JNI from the consumer APK
         uses: reactivecircus/android-emulator-runner@e89f39f1abbbd05b1113a29cf4db69e7540cae5a # v2.37.0
         with:
           api-level: 35
@@ -354,4 +358,6 @@ jobs:
           force-avd-creation: false
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           disable-animations: true
-          script: bash tools/scripts/android-dlopen-gate.sh dlopen-gate
+          script: |
+            bash tools/scripts/android-dlopen-gate.sh dlopen-gate
+            bindings/kotlin/gradlew -p bindings/kotlin/consumer-smoke :app:connectedDebugAndroidTest --no-daemon --console=plain
