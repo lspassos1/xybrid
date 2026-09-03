@@ -452,7 +452,12 @@ private final class XybridTokenStreamState: @unchecked Sendable {
         lock.unlock()
 
         if let id {
-            closeSessionHandle(id)
+            // Native close may wait for the worker to leave inference. A task's
+            // cancellation handler (and iterator deinit) runs synchronously on
+            // its caller, which can be the UI thread. Retain the close closure,
+            // not this state, until cleanup finishes on a background executor.
+            let closeHandle = closeSessionHandle
+            Task.detached { closeHandle(id) }
         }
     }
 }

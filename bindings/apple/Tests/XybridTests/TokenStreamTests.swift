@@ -29,6 +29,7 @@ final class TokenStreamTests: XCTestCase {
         let end = try await iterator.next()
         XCTAssertNil(end)
         XCTAssertEqual(probe.pullCount, 3)
+        XCTAssertTrue(probe.waitUntilClosed(timeout: 2))
         XCTAssertEqual(probe.closeCount, 1)
     }
 
@@ -41,6 +42,7 @@ final class TokenStreamTests: XCTestCase {
         try await consumeOne(probe.stream())
 
         XCTAssertEqual(probe.pullCount, 1)
+        XCTAssertTrue(probe.waitUntilClosed(timeout: 2))
         XCTAssertEqual(probe.closeCount, 1)
     }
 
@@ -60,6 +62,33 @@ final class TokenStreamTests: XCTestCase {
         XCTAssertEqual(probe.closeCount, 1)
     }
 
+    func testCancellationDoesNotWaitForNativeCleanup() async throws {
+        let probe = StreamProbe(events: [], blockPullUntilClosed: true, blockClose: true)
+        let task = Task { () throws -> XybridStreamToken? in
+            var iterator = probe.stream().makeAsyncIterator()
+            return try await iterator.next()
+        }
+        XCTAssertTrue(probe.waitUntilPullStarts(timeout: 2))
+        let cancellationReturned = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            task.cancel()
+            cancellationReturned.signal()
+        }
+        let closeStarted = probe.waitUntilClosed(timeout: 2)
+        let returned = await withCheckedContinuation { continuation in
+            DispatchQueue.global().async {
+                continuation.resume(returning: cancellationReturned.wait(timeout: .now() + 2) == .success)
+            }
+        }
+        // Always release the mock worker, including on a failed assertion.
+        probe.releaseClose()
+        XCTAssertTrue(closeStarted)
+        XCTAssertTrue(returned, "cancelling a task must not drain native inference inline")
+        let result = try await task.value
+        XCTAssertNil(result)
+        XCTAssertEqual(probe.closeCount, 1)
+    }
+
     private func consumeOne(_ stream: XybridTokenStream) async throws {
         for try await token in stream {
             XCTAssertEqual(token.token, "one")
@@ -72,15 +101,18 @@ private final class StreamProbe: @unchecked Sendable {
     private let condition = NSCondition()
     private var events: [XybridStreamEvent]
     private let blockPullUntilClosed: Bool
+    private let blockClose: Bool
     private var starts = 0
     private var pulls = 0
     private var closes = 0
     private var pullStarted = false
     private var closed = false
+    private var closeReleased = false
 
-    init(events: [XybridStreamEvent], blockPullUntilClosed: Bool = false) {
+    init(events: [XybridStreamEvent], blockPullUntilClosed: Bool = false, blockClose: Bool = false) {
         self.events = events
         self.blockPullUntilClosed = blockPullUntilClosed
+        self.blockClose = blockClose
     }
 
     var startCount: Int { read { starts } }
@@ -103,6 +135,23 @@ private final class StreamProbe: @unchecked Sendable {
             if !condition.wait(until: deadline) { return false }
         }
         return true
+    }
+
+    func waitUntilClosed(timeout: TimeInterval) -> Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        let deadline = Date().addingTimeInterval(timeout)
+        while !closed {
+            if !condition.wait(until: deadline) { return false }
+        }
+        return true
+    }
+
+    func releaseClose() {
+        condition.lock()
+        closeReleased = true
+        condition.broadcast()
+        condition.unlock()
     }
 
     private func start() -> UInt64 {
@@ -144,6 +193,9 @@ private final class StreamProbe: @unchecked Sendable {
             closed = true
         }
         condition.broadcast()
+        while blockClose && !closeReleased {
+            condition.wait()
+        }
         condition.unlock()
     }
 
