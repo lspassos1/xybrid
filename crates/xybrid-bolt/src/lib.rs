@@ -1003,10 +1003,15 @@ pub struct XybridCancellationToken {
     inner: std::sync::Arc<facade::CancellationToken>,
 }
 
+impl Default for XybridCancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[export]
 impl XybridCancellationToken {
     /// Create a fresh, non-cancelled token.
-    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self {
             inner: facade::CancellationToken::new(),
