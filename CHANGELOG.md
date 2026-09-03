@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Cloud pipeline stages now use the real gateway adapter. The default
+  orchestrator previously registered a simulation under the same adapter name,
+  returning fabricated text and hiding failures without contacting the gateway.
+  Explicit cloud stages now perform the configured requests and propagate errors.
+
 - Pipeline stage latency IDs now use the YAML stage identifier rather than the
   underlying model ID, and Flutter no longer misreports `cloud:<provider>` or
   `server:<endpoint>` final stages as local execution (#502).
