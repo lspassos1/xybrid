@@ -487,7 +487,7 @@ jobs:
     runs-on: ubuntu-latest
     # Inspect dependency results even when the tooling path gate skips its matrix.
     if: ${{ !cancelled() }}
-    needs: [tooling-changes, tooling-tests, unity-bolt-compile, python-sdk, fmt, clippy, check-no-default-features, check-platform-macos, check-platform-desktop, check-vision-platforms, check-llamacpp-vulkan, clippy-llm, test-llm, test, api-contract, web]
+    needs: [tooling-changes, tooling-tests, unity-bolt-compile, python-sdk, kotlin-jni-drift, fmt, clippy, check-no-default-features, check-platform-macos, check-platform-desktop, check-vision-platforms, check-llamacpp-vulkan, clippy-llm, test-llm, test, api-contract, web]
     steps:
       - name: Verify required job results
         env:
@@ -513,6 +513,11 @@ jobs:
                   .key == "python-sdk"
                   and .value.result == "skipped"
                   and $needs["tooling-changes"].outputs.python_sdk == "false"
+                )
+                or (
+                  .key == "kotlin-jni-drift"
+                  and .value.result == "skipped"
+                  and $needs["tooling-changes"].outputs.kotlin_jni == "false"
                 )
               )
           ' <<<"$NEEDS_JSON"
