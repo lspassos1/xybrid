@@ -16,6 +16,9 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, &'static str> {
     if a.is_empty() || a.len() != b.len() {
         return Err("embedding vectors must be non-empty and have equal dimensions");
     }
+    if a.iter().chain(b).any(|value| !value.is_finite()) {
+        return Err("embedding vectors must contain only finite values");
+    }
 
     let dot_product = a
         .iter()
@@ -34,7 +37,10 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> Result<f32, &'static str> {
         .sqrt();
     let denominator = norm_a * norm_b;
 
-    if denominator <= f64::EPSILON {
+    // Finite f32 components are squared in f64, so even a nonzero f32
+    // subnormal has a representable norm. An epsilon cutoff would incorrectly
+    // reject valid embeddings just because they have a small scale.
+    if denominator == 0.0 {
         return Err("cosine similarity is undefined for a zero vector");
     }
 
@@ -128,6 +134,39 @@ mod tests {
         assert!(cosine_similarity(&[], &[]).is_err());
         assert!(cosine_similarity(&[1.0], &[1.0, 2.0]).is_err());
         assert!(cosine_similarity(&[0.0, 0.0], &[1.0, 0.0]).is_err());
+        for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert!(cosine_similarity(&[invalid], &[1.0]).is_err());
+            assert!(cosine_similarity(&[1.0], &[invalid]).is_err());
+        }
+    }
+
+    #[test]
+    fn cosine_similarity_is_scale_invariant_for_finite_f32_values() {
+        for scale in [f32::from_bits(1), 1e-20, 1.0, f32::MAX] {
+            assert_eq!(cosine_similarity(&[scale, scale], &[scale, scale]), Ok(1.0));
+            assert_eq!(cosine_similarity(&[scale], &[-scale]), Ok(-1.0));
+        }
+    }
+
+    #[test]
+    fn ranking_preserves_input_order_for_ties_and_keeps_negative_scores() {
+        let ranked = rank_by_similarity(
+            &[1.0, 0.0],
+            vec![
+                ("opposite", vec![-1.0, 0.0]),
+                ("first match", vec![1.0, 0.0]),
+                ("second match", vec![2.0, 0.0]),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            ranked,
+            vec![
+                ("first match", 1.0),
+                ("second match", 1.0),
+                ("opposite", -1.0)
+            ]
+        );
     }
 
     #[test]
