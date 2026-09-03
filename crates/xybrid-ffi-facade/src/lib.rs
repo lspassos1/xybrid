@@ -1494,6 +1494,16 @@ impl AsrPartialSlot {
         self.ready.notify_all();
     }
 
+    fn cancel(&self) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.pending = None;
+        state.closed = true;
+        self.ready.notify_all();
+    }
+
     fn recv(&self) -> Option<Result<AsrPartialResult>> {
         let mut state = self
             .state
@@ -1624,9 +1634,12 @@ impl AsrStreamingSession {
 
     /// Stop the worker and close the partial-result stream without blocking.
     ///
-    /// Pending audio is abandoned at the next inference boundary. Repeated
-    /// calls are harmless.
+    /// Waiting readers are released immediately and unread partials are
+    /// discarded. Pending audio is abandoned at the next inference boundary;
+    /// the worker retains its native resources until then. Repeated calls are
+    /// harmless.
     pub fn close(&self) -> Result<()> {
+        self.partial_slot.cancel();
         if self.closed.swap(true, Ordering::AcqRel) {
             return Ok(());
         }
@@ -2729,6 +2742,56 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Barrier;
     use std::time::Duration;
+
+    #[test]
+    fn asr_stop_unblocks_pending_pull_before_warmup_finishes() {
+        let warmup_started = Arc::new(Barrier::new(2));
+        let release_warmup = Arc::new(Barrier::new(2));
+        let session = AsrStreamingSession::spawn(BlockingWarmupAsrStream {
+            warmup_started: Arc::clone(&warmup_started),
+            release_warmup: Arc::clone(&release_warmup),
+        })
+        .unwrap();
+        warmup_started.wait();
+        let reader = Arc::clone(&session);
+        let (tx, rx) = mpsc::sync_channel(1);
+        let task = std::thread::spawn(move || {
+            tx.send(reader.next()).unwrap();
+        });
+        session.close().unwrap();
+        let before_release = rx.recv_timeout(Duration::from_secs(2));
+        release_warmup.wait();
+        task.join().unwrap();
+        assert!(
+            matches!(before_release, Ok(Ok(None))),
+            "stop left next() blocked: {before_release:?}"
+        );
+    }
+
+    #[test]
+    fn asr_stop_discards_unread_partials_and_rejects_late_publication() {
+        let slot = AsrPartialSlot::default();
+        slot.publish(Ok(asr_partial(1, "before stop")));
+        slot.cancel();
+        slot.publish(Ok(asr_partial(2, "late inference result")));
+        assert!(slot.recv().is_none());
+        slot.cancel();
+        assert!(slot.recv().is_none());
+    }
+
+    #[test]
+    fn asr_worker_failure_is_delivered_before_end_of_stream() {
+        let session =
+            AsrStreamingSession::spawn(FakeAsrStream::new(vec![Err(Error::InferenceError {
+                message: "decoder failed".into(),
+            })]))
+            .unwrap();
+        session.feed(vec![0.0; 320]).unwrap();
+        assert!(
+            matches!(session.next(), Err(Error::InferenceError { message }) if message == "decoder failed")
+        );
+        assert_eq!(session.next().unwrap(), None);
+    }
 
     struct FakeAsrStream {
         feed_results: Mutex<VecDeque<Result<Option<AsrPartialResult>>>>,

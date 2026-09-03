@@ -13,7 +13,7 @@
 //! # Threading model
 //!
 //! A single worker thread owns the `XybridStream` for its whole lifetime.
-//! Commands reach it over a [`tokio::sync::mpsc`] channel, so they are applied
+//! Commands reach it over a bounded [`std::sync::mpsc`] channel, so they are applied
 //! in submission order — audio fed in order is transcribed in order. [`feed`]
 //! is a cheap, non-blocking channel send (`#[frb(sync)]`); the heavy inference
 //! runs on the worker, never on the Dart isolate, so the UI never stalls.
@@ -170,35 +170,39 @@ impl FfiStreamSession {
 
     /// Subscribe to partial transcripts. Call this once per session.
     ///
-    /// Partials already queued before subscription are delivered in order, so
-    /// there is no feed/subscribe race. Repeated subscriptions are ignored.
+    /// Partials are cumulative; a slow or absent reader receives the latest
+    /// value rather than an unbounded queue. Backend errors reach the Dart
+    /// stream. A second subscription returns an error.
     ///
     /// [`feed`]: Self::feed
-    pub fn subscribe(&self, sink: StreamSink<FfiPartialResult>) {
+    pub fn subscribe(&self, sink: StreamSink<FfiPartialResult>) -> Result<(), String> {
         if self.subscribed.swap(true, Ordering::AcqRel) {
-            return;
+            return Err("live ASR session already has a partial subscription".into());
         }
         let session = Arc::clone(&self.inner);
         let spawn_result = std::thread::Builder::new()
             .name("xybrid-asr-dart".into())
-            .spawn(move || loop {
-                match session.next() {
-                    Ok(Some(partial)) => {
-                        if sink.add(FfiPartialResult::from(partial)).is_err() {
-                            let _ = session.close();
-                            break;
-                        }
-                    }
-                    Ok(None) => break,
-                    Err(error) => {
-                        log::warn!("live ASR partial stream stopped: {error}");
-                        break;
-                    }
-                }
+            .spawn(move || {
+                forward_partials(
+                    || session.next(),
+                    |event| match event {
+                        Ok(partial) => sink.add(partial).is_ok(),
+                        // FRB stream errors use its AnyhowException wire codec,
+                        // independently of subscribe's setup-error type.
+                        Err(error) => sink
+                            .add_error(flutter_rust_bridge::for_generated::anyhow::Error::msg(
+                                error,
+                            ))
+                            .is_ok(),
+                    },
+                );
+                let _ = session.close();
             });
         if let Err(error) = spawn_result {
-            log::warn!("failed to spawn Dart ASR delivery thread: {error}");
+            let _ = self.inner.close();
+            return Err(format!("failed to spawn Dart ASR delivery thread: {error}"));
         }
+        Ok(())
     }
 
     /// Feed PCM f32 mono 16 kHz samples.
@@ -210,8 +214,7 @@ impl FfiStreamSession {
     ///
     /// # Errors
     ///
-    /// If the session has been finalized (after [`flush`]) or otherwise torn
-    /// down, so the worker is no longer accepting audio.
+    /// If the input queue is full or the session has stopped accepting audio.
     ///
     /// [`flush`]: Self::flush
     #[frb(sync)]
@@ -221,7 +224,8 @@ impl FfiStreamSession {
 
     /// Finalize: drain buffered audio and return the complete transcript.
     ///
-    /// After this the session is finalized; further [`feed`] calls error.
+    /// This finalizes one utterance. Call [`reset`](Self::reset) before feeding
+    /// the next one; the worker and loaded model remain available.
     ///
     /// # Errors
     ///
@@ -254,5 +258,78 @@ impl FfiStreamSession {
 impl Drop for FfiStreamSession {
     fn drop(&mut self) {
         let _ = self.inner.close();
+    }
+}
+
+fn forward_partials(
+    mut next: impl FnMut() -> facade::Result<Option<facade::AsrPartialResult>>,
+    mut deliver: impl FnMut(Result<FfiPartialResult, String>) -> bool,
+) {
+    loop {
+        match next() {
+            Ok(Some(partial)) => {
+                if !deliver(Ok(partial.into())) {
+                    return;
+                }
+            }
+            Ok(None) => return,
+            Err(error) => {
+                deliver(Err(error.to_string()));
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::VecDeque;
+
+    #[test]
+    fn partial_delivery_forwards_terminal_error_and_stops_pulling() {
+        let partial = facade::AsrPartialResult {
+            text: "hello".into(),
+            is_stable: false,
+            chunk_index: 1,
+            audio_duration_ms: 20,
+        };
+        let mut source = VecDeque::from([
+            Ok(Some(partial)),
+            Err(facade::Error::InferenceError {
+                message: "decoder failed".into(),
+            }),
+            Ok(None),
+        ]);
+        let mut events = Vec::new();
+        forward_partials(
+            || source.pop_front().unwrap(),
+            |event| {
+                events.push(event);
+                true
+            },
+        );
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].as_ref().unwrap().text, "hello");
+        assert!(events[1].as_ref().unwrap_err().contains("decoder failed"));
+        assert_eq!(source.len(), 1, "a terminal error must end delivery");
+    }
+
+    #[test]
+    fn closed_consumer_stops_delivery_after_one_pull() {
+        let mut pulls = 0;
+        forward_partials(
+            || {
+                pulls += 1;
+                Ok(Some(facade::AsrPartialResult {
+                    text: "hello".into(),
+                    is_stable: false,
+                    chunk_index: 1,
+                    audio_duration_ms: 20,
+                }))
+            },
+            |_| false,
+        );
+        assert_eq!(pulls, 1);
     }
 }
