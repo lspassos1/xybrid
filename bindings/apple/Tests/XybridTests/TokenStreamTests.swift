@@ -33,6 +33,53 @@ final class TokenStreamTests: XCTestCase {
         XCTAssertEqual(probe.closeCount, 1)
     }
 
+    func testErrorTerminatesIterator() async throws {
+        let probe = StreamProbe(events: [])
+        var iterator = probe.stream().makeAsyncIterator()
+
+        do {
+            _ = try await iterator.next()
+            XCTFail("the first pull should throw")
+        } catch {
+            // The iterator must surface the native error exactly once.
+        }
+
+        let firstAfterError = try await iterator.next()
+        let secondAfterError = try await iterator.next()
+        XCTAssertNil(firstAfterError)
+        XCTAssertNil(secondAfterError)
+        XCTAssertEqual(probe.startCount, 1)
+        XCTAssertEqual(probe.pullCount, 1)
+        XCTAssertTrue(probe.waitUntilClosed(timeout: 2))
+        XCTAssertEqual(probe.closeCount, 1)
+    }
+
+    func testStreamAllowsOnlyOneInferenceRun() async throws {
+        let probe = StreamProbe(events: [
+            .token("one", index: 0),
+            .complete,
+        ])
+        let stream = probe.stream()
+        let streamCopy = stream
+        var firstIterator = stream.makeAsyncIterator()
+        var secondIterator = streamCopy.makeAsyncIterator()
+
+        let firstFromSecondIterator = try await secondIterator.next()
+        let secondFromSecondIterator = try await secondIterator.next()
+        XCTAssertNil(firstFromSecondIterator)
+        XCTAssertNil(secondFromSecondIterator)
+        XCTAssertEqual(probe.startCount, 0)
+
+        let token = try await firstIterator.next()
+        let end = try await firstIterator.next()
+        XCTAssertEqual(token?.token, "one")
+        XCTAssertNil(end)
+        XCTAssertEqual(probe.startCount, 1)
+        XCTAssertEqual(probe.pullCount, 2)
+        XCTAssertTrue(probe.waitUntilClosed(timeout: 2))
+        XCTAssertEqual(probe.closeCount, 1)
+    }
+
     func testBreakingIterationClosesTheNativeSession() async throws {
         let probe = StreamProbe(events: [
             .token("one", index: 0),
