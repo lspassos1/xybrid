@@ -282,6 +282,9 @@ extension XybridModel: @unchecked Sendable {}
 /// each call to ``AsyncIterator/next()``. A slow consumer therefore stops
 /// pulling from the facade and preserves its bounded-channel backpressure
 /// instead of accumulating tokens in an unbounded Swift buffer.
+///
+/// The sequence is one-shot. Its first iterator owns the inference run;
+/// subsequent iterators finish immediately without starting another run.
 public struct XybridTokenStream: AsyncSequence, Sendable {
     public typealias Element = XybridStreamToken
 
@@ -291,15 +294,22 @@ public struct XybridTokenStream: AsyncSequence, Sendable {
 
         public mutating func next() async throws -> XybridStreamToken? {
             guard let state else { return nil }
-            let token = try await state.next()
-            if token == nil {
+            do {
+                let token = try await state.next()
+                if token == nil {
+                    self.state = nil
+                }
+                return token
+            } catch {
                 self.state = nil
+                throw error
             }
-            return token
         }
     }
 
-    private let makeState: @Sendable () -> XybridTokenStreamState
+    // Copies share one source, so claiming an iterator transfers the only
+    // retained session state out of every copy of the sequence.
+    private let source: XybridTokenStreamSource
 
     fileprivate init(
         model: XybridModel,
@@ -320,13 +330,30 @@ public struct XybridTokenStream: AsyncSequence, Sendable {
         next: @escaping @Sendable (UInt64) throws -> XybridStreamEvent,
         close: @escaping @Sendable (UInt64) -> Void
     ) {
-        makeState = {
-            XybridTokenStreamState(start: start, next: next, close: close)
-        }
+        source = XybridTokenStreamSource(
+            state: XybridTokenStreamState(start: start, next: next, close: close)
+        )
     }
 
     public func makeAsyncIterator() -> AsyncIterator {
-        AsyncIterator(state: makeState())
+        AsyncIterator(state: source.claimState())
+    }
+}
+
+private final class XybridTokenStreamSource: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: XybridTokenStreamState?
+
+    init(state: XybridTokenStreamState) {
+        self.state = state
+    }
+
+    func claimState() -> XybridTokenStreamState? {
+        lock.lock()
+        defer { lock.unlock() }
+        let claimedState = state
+        state = nil
+        return claimedState
     }
 }
 
