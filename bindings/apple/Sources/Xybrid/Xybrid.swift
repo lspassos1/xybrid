@@ -318,18 +318,18 @@ public struct XybridTokenStream: AsyncSequence, Sendable {
         options: XybridRunOptions?,
         cancellationToken: XybridCancellationToken?
     ) {
-        makeState = {
-            // Default tokens are one-shot and belong to an iterator, not the
-            // reusable sequence. Closing one iteration must not poison another.
-            let cancellation = cancellationToken ?? XybridCancellationToken()
-            return XybridTokenStreamState(
+        // A default token belongs to this one-shot sequence. It is created
+        // once here so no second iterator can start another cancellable run.
+        let cancellation = cancellationToken ?? XybridCancellationToken()
+        source = XybridTokenStreamSource(
+            state: XybridTokenStreamState(
                 start: {
                     try model.runStream(envelope: envelope, options: options, cancellation: cancellation)
                 },
                 next: { try model.streamNext(streamId: $0) },
                 close: { model.streamClose(streamId: $0) }
             )
-        }
+        )
     }
 
     // Closure injection keeps the pull and cancellation contract testable
