@@ -43,11 +43,15 @@ ANDROID_ABIS = [
 
 cc_import(
     name = "android_cxx_shared",
+    # Resolve the select on host platforms so wildcard analysis can skip this
+    # Android-only target. Each shipped Android ABI still requires its NDK lib.
     shared_library = select({
         "@rules_rs//rs/platforms/config:aarch64-linux-android": "@androidndk//:libcxx_shared_aarch64-linux-android",
         "@rules_rs//rs/platforms/config:armv7-linux-androideabi": "@androidndk//:libcxx_shared_arm-linux-androideabi",
         "@rules_rs//rs/platforms/config:x86_64-linux-android": "@androidndk//:libcxx_shared_x86_64-linux-android",
+        "//conditions:default": None,
     }),
+    target_compatible_with = ["@platforms//os:android"],
 )
 
 # BoltFFI's generated Kotlin declares JVM `external fun`s. The Rust staticlib
