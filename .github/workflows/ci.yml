@@ -212,6 +212,10 @@ jobs:
           cache-bin: false
       - name: Check platform-macos
         run: cargo check -p xybrid-sdk --features platform-macos
+      - name: Test native Core ML bundle ownership
+        run: cargo test -p xybrid-core --features coreml,ort-download --lib runtime_adapter::coreml::native::tests
+      - name: Test native Core ML fixture
+        run: cargo test -p integration-tests --features coreml --test coreml_native
 
   check-platform-desktop:
     name: check (platform-desktop, ubuntu-latest)

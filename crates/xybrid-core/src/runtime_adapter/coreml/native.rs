@@ -11,7 +11,7 @@ use objc2_core_ml::{
     MLComputeUnits, MLDictionaryFeatureProvider, MLFeatureProvider, MLFeatureType, MLFeatureValue,
     MLModel, MLModelConfiguration, MLMultiArray, MLMultiArrayDataType,
 };
-use objc2_foundation::{NSArray, NSDictionary, NSError, NSNumber, NSString, NSURL};
+use objc2_foundation::{NSArray, NSDictionary, NSError, NSFileManager, NSNumber, NSString, NSURL};
 use std::collections::HashMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,30 @@ struct WorkerModel {
     input_shape: Vec<u64>,
     input_data_type: MLMultiArrayDataType,
     output_name: String,
+    // Fields drop in declaration order: release the model before removing
+    // files Core ML may still have mapped. Caller-supplied bundles are borrowed.
+    _bundle: ModelBundle,
+}
+
+/// A compiled URL and ownership of any temporary files created for this load.
+struct ModelBundle {
+    url: Retained<NSURL>,
+    temporary: bool,
+}
+
+impl Drop for ModelBundle {
+    fn drop(&mut self) {
+        if self.temporary {
+            // Only the URL returned by our own compilation is owned. Never
+            // remove a caller's .mlmodelc, its parent, or the source package.
+            if let Err(error) = NSFileManager::defaultManager().removeItemAtURL_error(&self.url) {
+                log::warn!(
+                    "Failed to remove temporary Core ML bundle: {}",
+                    error.localizedDescription()
+                );
+            }
+        }
+    }
 }
 
 enum Command {
@@ -52,7 +76,9 @@ enum Command {
 /// `MLMultiArray` input, and its sole `MLMultiArray` output is returned as an
 /// embedding. Native `.mlmodel` and `.mlpackage` assets are compiled for the
 /// current device before loading; precompiled `.mlmodelc` bundles are loaded
-/// directly.
+/// directly. Temporary compiled bundles live until model unload or adapter
+/// drop and are also removed if loading fails. Caller-supplied `.mlmodelc`
+/// bundles are never removed. Compiled bundles are not cached across loads.
 ///
 /// Core ML objects are confined to a dedicated worker thread because the
 /// generated Objective-C bindings do not claim `Send` or `Sync`. Only owned
@@ -334,21 +360,28 @@ fn ns_error(context: &str, error: &NSError) -> String {
     deprecated,
     reason = "RuntimeAdapter loading is synchronous and Core ML offers no nondeprecated synchronous compiler"
 )]
-fn model_url(path: &Path) -> AdapterResult<Retained<NSURL>> {
+fn model_url(path: &Path) -> AdapterResult<ModelBundle> {
     let path_string = path.to_string_lossy();
     let source_url = NSURL::fileURLWithPath(&NSString::from_str(&path_string));
     if path.extension().and_then(|value| value.to_str()) == Some("mlmodelc") {
-        return Ok(source_url);
+        return Ok(ModelBundle {
+            url: source_url,
+            temporary: false,
+        });
     }
 
     // Core ML's synchronous compiler is deprecated in favour of its async
     // counterpart, but `RuntimeAdapter::load_model` is synchronous. This call
     // preserves that trait contract and runs only on the worker during loading.
-    unsafe {
+    let url = unsafe {
         MLModel::compileModelAtURL_error(&source_url).map_err(|error| {
             AdapterError::RuntimeError(ns_error("Failed to compile Core ML model", &error))
-        })
-    }
+        })?
+    };
+    Ok(ModelBundle {
+        url,
+        temporary: true,
+    })
 }
 
 fn single_multi_array_feature(
@@ -403,7 +436,14 @@ fn single_multi_array_feature(
 }
 
 fn load_native_model(path: &Path, model_id: &str) -> AdapterResult<(WorkerModel, ModelMetadata)> {
-    let url = model_url(path)?;
+    load_model_bundle(path, model_id, model_url(path)?)
+}
+
+fn load_model_bundle(
+    path: &Path,
+    model_id: &str,
+    bundle: ModelBundle,
+) -> AdapterResult<(WorkerModel, ModelMetadata)> {
     // SAFETY: `new` allocates and initializes an Objective-C configuration.
     let configuration = unsafe { MLModelConfiguration::new() };
     // `All` lets Core ML choose between CPU, GPU, and Neural Engine based on
@@ -411,7 +451,7 @@ fn load_native_model(path: &Path, model_id: &str) -> AdapterResult<(WorkerModel,
     unsafe { configuration.setComputeUnits(MLComputeUnits::All) };
     // SAFETY: URL and configuration are valid retained Foundation objects.
     let model =
-        unsafe { MLModel::modelWithContentsOfURL_configuration_error(&url, &configuration) }
+        unsafe { MLModel::modelWithContentsOfURL_configuration_error(&bundle.url, &configuration) }
             .map_err(|error| {
                 AdapterError::RuntimeError(ns_error(
                     "Failed to load compiled Core ML model",
@@ -436,6 +476,7 @@ fn load_native_model(path: &Path, model_id: &str) -> AdapterResult<(WorkerModel,
             input_shape,
             input_data_type,
             output_name,
+            _bundle: bundle,
         },
         metadata,
     ))
@@ -543,4 +584,82 @@ fn infer_native(model: &WorkerModel, values: &[f32]) -> AdapterResult<Vec<f32>> 
         result.push(unsafe { output_array.objectAtIndexedSubscript(index) }.as_f32());
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temporary_bundle(path: &Path) -> ModelBundle {
+        ModelBundle {
+            url: NSURL::fileURLWithPath(&NSString::from_str(&path.to_string_lossy())),
+            temporary: true,
+        }
+    }
+
+    #[test]
+    fn temporary_bundle_is_removed_without_removing_its_parent_or_siblings() {
+        let directory = tempfile::tempdir().unwrap();
+        let compiled = directory.path().join("compiled.mlmodelc");
+        let source = directory.path().join("source.mlmodel");
+        std::fs::create_dir(&compiled).unwrap();
+        std::fs::write(compiled.join("weights.bin"), b"test weights").unwrap();
+        std::fs::write(&source, b"source model").unwrap();
+
+        let bundle = temporary_bundle(&compiled);
+        assert!(compiled.exists());
+        drop(bundle);
+
+        assert!(!compiled.exists());
+        assert!(directory.path().exists());
+        assert_eq!(std::fs::read(source).unwrap(), b"source model");
+    }
+
+    #[test]
+    fn caller_supplied_compiled_bundle_is_not_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let compiled = directory.path().join("provided.mlmodelc");
+        std::fs::create_dir(&compiled).unwrap();
+        let marker = compiled.join("weights.bin");
+        std::fs::write(&marker, b"user weights").unwrap();
+
+        drop(model_url(&compiled).unwrap());
+
+        assert_eq!(std::fs::read(marker).unwrap(), b"user weights");
+    }
+
+    #[test]
+    fn failed_native_load_removes_its_temporary_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let compiled = directory.path().join("invalid.mlmodelc");
+        std::fs::create_dir(&compiled).unwrap();
+
+        let result = autoreleasepool(|_| {
+            load_model_bundle(&compiled, "invalid", temporary_bundle(&compiled))
+        });
+
+        assert!(matches!(result, Err(AdapterError::RuntimeError(_))));
+        assert!(!compiled.exists());
+        assert!(directory.path().exists());
+    }
+
+    #[test]
+    fn failed_native_load_preserves_a_caller_supplied_bundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let compiled = directory.path().join("invalid.mlmodelc");
+        std::fs::create_dir(&compiled).unwrap();
+
+        let result = autoreleasepool(|_| load_native_model(&compiled, "invalid"));
+
+        assert!(matches!(result, Err(AdapterError::RuntimeError(_))));
+        assert!(compiled.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_does_not_panic() {
+        let directory = tempfile::tempdir().unwrap();
+        // Simulate the OS removing a temporary artifact before model release.
+        drop(temporary_bundle(&directory.path().join("missing.mlmodelc")));
+        assert!(directory.path().exists());
+    }
 }

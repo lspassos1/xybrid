@@ -57,6 +57,28 @@ fn native_coreml_rejects_the_wrong_tensor_shape() -> Result<(), Box<dyn std::err
 }
 
 #[test]
+fn native_coreml_can_reload_after_unload() -> Result<(), Box<dyn std::error::Error>> {
+    let model_path = model_path();
+    let mut adapter = CoreMLRuntimeAdapter::new();
+    let input = Envelope::new(EnvelopeKind::Embedding(vec![1.0, 2.0, 3.0, 4.0]));
+
+    for _ in 0..3 {
+        adapter.load_model(&model_path.to_string_lossy())?;
+        assert_eq!(
+            adapter.execute(&input)?.kind,
+            EnvelopeKind::Embedding(vec![0.25, 1.5, 8.0])
+        );
+        adapter.unload_model("xybrid_linear")?;
+        assert!(!adapter.is_loaded("xybrid_linear"));
+        assert!(
+            model_path.exists(),
+            "unload must preserve the source package"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn native_coreml_serializes_concurrent_predictions_safely() -> Result<(), Box<dyn std::error::Error>>
 {
     let model_path = model_path();
