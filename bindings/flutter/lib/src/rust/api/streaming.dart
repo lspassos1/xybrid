@@ -12,7 +12,7 @@ import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 import 'package:freezed_annotation/freezed_annotation.dart' hide protected;
 part 'streaming.freezed.dart';
 
-// These functions are ignored because they are not marked as `pub`: `ensure_logging`, `new`, `to_facade`
+// These functions are ignored because they are not marked as `pub`: `ensure_logging`, `forward_partials`, `new`, `to_facade`
 // These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `drop`, `fmt`, `fmt`, `fmt`, `from`
 
 // Rust type: RustOpaqueMoi<flutter_rust_bridge::for_generated::RustAutoOpaqueInner< FfiStreamSession>>
