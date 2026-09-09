@@ -14,7 +14,7 @@ name = "xybrid_sdk"
 path = "src/lib.rs"
 
 [dependencies]
-xybrid-macros = { version = "0.7.0", path = "../../macros" }
+xybrid-macros = { version = "0.8.0", path = "../../macros" }
 anyhow = "1.0"
 log = "0.4"
 chrono = { version = "0.4", features = ["serde"] }
@@ -38,12 +38,12 @@ ort = { version = "=2.0.0-rc.11", default-features = false, features = ["ndarray
 # Platform-specific dependencies (NOT features - those are in presets)
 # Android: rustls with ring backend (aws-lc-rs uses getentropy unavailable on API 24)
 [target.'cfg(target_os = "android")'.dependencies]
-xybrid-core = { version = "0.7.0", path = "../xybrid-core", default-features = false, features = ["ort-dynamic"] }
+xybrid-core = { version = "0.8.0", path = "../xybrid-core", default-features = false, features = ["ort-dynamic"] }
 ureq = { version = "2.9", default-features = false, features = ["json", "tls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-xybrid-core = { version = "0.7.0", path = "../xybrid-core", default-features = false, features = ["ort-download"] }
+xybrid-core = { version = "0.8.0", path = "../xybrid-core", default-features = false, features = ["ort-download"] }
 ureq = { version = "2.9", default-features = false, features = ["json", "tls"] }
 
 [features]
@@ -92,10 +92,10 @@ platform-android = ["xybrid-core/ort-dynamic", "llm-llamacpp-vision", "asr-whisp
 
 # iOS: CoreML + Metal acceleration + llama.cpp
 # (`ort-coreml` is ONNX Runtime's CoreML execution provider — unrelated to Candle.)
-platform-ios = ["xybrid-core/ort-download", "xybrid-core/ort-coreml", "llm-llamacpp-vision", "asr-whispercpp"]
+platform-ios = ["xybrid-core/ort-download", "xybrid-core/ort-coreml", "coreml", "llm-llamacpp-vision", "asr-whispercpp"]
 
 # macOS: CoreML + Metal + llama.cpp
-platform-macos = ["xybrid-core/ort-download", "xybrid-core/ort-coreml", "llm-llamacpp-vision", "asr-whispercpp"]
+platform-macos = ["xybrid-core/ort-download", "xybrid-core/ort-coreml", "coreml", "llm-llamacpp-vision", "asr-whispercpp"]
 
 # Desktop (Linux/Windows): CPU with llama.cpp
 platform-desktop = ["xybrid-core/ort-download", "llm-llamacpp-vision", "asr-whispercpp"]
@@ -106,6 +106,7 @@ platform-desktop = ["xybrid-core/ort-download", "llm-llamacpp-vision", "asr-whis
 ort-download = ["xybrid-core/ort-download"]
 ort-dynamic = ["xybrid-core/ort-dynamic"]
 ort-coreml = ["xybrid-core/ort-coreml"]
+coreml = ["xybrid-core/coreml"]
 
 # Candle (Pure Rust ML)
 candle = ["xybrid-core/candle"]
