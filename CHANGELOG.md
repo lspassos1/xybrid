@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Policy-routed hybrid inference: a pipeline stage can now carry a local GGUF
+model and an OpenAI-compatible cloud leg (DeepSeek, OpenAI, OpenRouter) at
+the same time, and a policy bundle decides which leg serves each request.
+
 ### Added
 
 - **Native cancellation on Swift, Kotlin, and Unity.** BoltFFI now exposes a
@@ -15,6 +19,107 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `CancellationToken` all signal the same Rust token, so cancelling UI work
   stops local generation at its next cooperative boundary instead of merely
   hiding its result (#501).
+- **Policy DSL and cloud preference.** Bundles are compiled at load time and
+  support `input.kind`, `input.text` (`contains` / `matches` / `==` / `!=`),
+  `input.text_len`, `metrics.battery_level`, `metrics.cpu_pct`,
+  `metrics.memory_pressure`, `metrics.thermal_state` and bare `true` / `false`;
+  actions are `allow`, `deny`, `route_cloud` (alias `prefer_cloud`) and
+  `redact`, plus `deny_cloud_if` / `route_cloud_if` shorthand lists. Invalid
+  rules are rejected at load and a failed reload keeps the previous bundle.
+- **Hybrid stages in `xybrid run`.** `target: auto` with a `provider` resolves
+  the local bundle *and* keeps the cloud leg; `cloud_model` names the model
+  sent to the provider; shared `system_prompt` / `temperature` / `max_tokens`
+  / `top_p` apply to both legs with the same precedence (input metadata, then
+  YAML, then template defaults). Unknown targets or providers are errors.
+- **OpenAI-compatible direct providers and DeepSeek thinking mode.**
+  `backend: direct` for OpenAI, DeepSeek, OpenRouter and Custom uses the
+  gateway transport at the provider's documented base URL with
+  `$<PROVIDER>_API_KEY`; `thinking: enabled|disabled` is a typed request
+  option serialized as DeepSeek's `"thinking": {"type": ...}`. Batch and SSE
+  share one request-body builder.
+- **`Backend` in CLI results** (`template-executor` vs
+  `cloud:<provider>:gateway`) and `StageExecutionResult.adapter`, so a routing
+  label can be checked against what actually ran.
+- `OrchestrationAuthority::resolve_stage` and `load_policies`,
+  `StageResolution`, `PolicyAction`, `PolicyRoute`, `ThinkingMode`,
+  `CompletionRequest::with_thinking`, `MockRuntimeAdapter::with_name` /
+  `captured_inputs`.
+- Primary example `crates/xybrid-cli/examples/hybrid-platform.yaml` uses a
+  Xybrid API key and platform-held provider credentials. The separate
+  `hybrid-deepseek.yaml` example supports direct-provider testing. Both use
+  policies under `crates/xybrid-cli/examples/policies/`, alongside the
+  `test-policy-routing` workflow that drives the real binary through a policy
+  with a real local model and a local fake DeepSeek endpoint.
+
+### Changed
+
+- **Apple: smaller `XybridFFI.xcframework`.** The Swift package's binary target is now
+  built with fat LTO (`--config=rust-lto`, shared with the Flutter precompile lane), so
+  each slice carries only the Rust code reachable from the exported FFI functions.
+  Measured: release zip 99.9 MB -> 63.6 MB; device slice 176 MB -> 117 MB, simulator
+  slice 171 MB -> 111 MB. All 91 functions declared in `xybrid-bolt.h` remain exported.
+  PR CI builds the XCFramework with the same config, so the Swift wrapper is compiled
+  and unit-tested against exactly what ships.
+- **Flutter: precompiled binaries are downloaded gzip-compressed.** The release lane
+  publishes every native library as-is and as `<asset>.gz`, each with its own ed25519
+  signature; cargokit prefers the compressed form, verifies it *before* decompressing,
+  and falls back to the uncompressed asset if the compressed one is missing (older
+  releases) or fails verification. Measured: iOS static library 119.2 MB -> 33.6 MB,
+  Android arm64 26.9 MB -> 9.5 MB; verify + unpack costs 0.6 s. The shared cache stores
+  the compressed form, so it shrinks by the same factor. `verify-binaries` also checks
+  that each compressed asset decodes to its uncompressed twin. A publisher re-run over a
+  partial release derives the missing assets from the already-published, signature-
+  verified binary instead of this run's rebuild, deletes unusable orphans (a binary
+  without its signature), and never signs bytes it cannot verify.
+- **Flutter: precompiled binaries are cached per machine, not per app.** cargokit
+  keeps verified downloads in `~/.xybrid/cache/precompiled/<crate-hash>/`, so
+  `flutter clean` and new projects copy the native library locally instead of
+  downloading it again. Each reuse re-verifies the ed25519 signature against the
+  package's pinned key; a corrupted or swapped entry is deleted and re-downloaded.
+  Entries unused for 90 days are pruned. `XYBRID_PRECOMPILED_CACHE_DIR` relocates
+  the cache (e.g. a CI-persisted path) or, set empty, disables it. Downloads into
+  the app's build directory are now written atomically.
+- **Flutter: precompiled-binary downloads are visible in the build log.**
+  cargokit now logs at INFO which native library it downloads, its size, and
+  the source URL, then progress every 10 s and a size/time/throughput summary;
+  each target also reports whether its binary was downloaded or reused from
+  cache. Previously all of this was FINE-level, so a first build that fetched a
+  ~180 MB static library was silent for minutes and read as a Rust compile.
+- **Smaller Flutter precompiled natives.** The `release/v*` precompile lane now
+  builds the Flutter staticlib/cdylib with fat LTO (`--config=flutter-precompile`).
+  Measured on the darwin staticlib: macOS 175 MB -> 112 MB, iOS 181 MB -> 119 MB;
+  the Rust objects shrink 79 MB -> 25 MB, the remainder is the bundled ONNX Runtime.
+  Cuts the first-build download and `-force_load` link for pub.dev consumers.
+- **Policy is a dispatch invariant.** Every stage decision evaluates the
+  policy once against the actual input and one device snapshot; a denial (or
+  a required transform) restricts the target to the device ahead of explicit
+  `cloud` / `server` targets, model availability, hysteresis, reliability
+  history, device stress and remote advice, and is re-applied immediately
+  before dispatch. A denied stage with no usable local leg fails locally
+  instead of running on cloud. `RemoteAuthority` consults advice only for
+  decisions the policy, an explicit target, availability or a policy
+  preference did not already settle, and never for a denied input.
+- **Credentials are scoped to the destination.** An explicit `api_key`
+  (literal or `$ENV`) always wins and never falls through; the Xybrid platform
+  key is sent only to the configured platform gateway origin (exact
+  scheme/host/port); a provider key only to that provider's origin; any other
+  endpoint — including a self-hosted gateway reached via `gateway_url` — is
+  anonymous unless `api_key` is set. Point the platform at such a gateway with
+  `init().gateway_url(..)` / `set_gateway_url`, `XYBRID_GATEWAY_URL` or
+  `set_platform_url` to keep the platform key flowing.
+- **The executor dispatches on the routing target**, not on the presence of a
+  provider. A hybrid stage routed local whose bundle is missing or invalid
+  errors instead of falling back to another adapter or to cloud; local
+  fallback never selects the cloud adapter and vice versa.
+- `--dry-run` decides the first stage through the same authority (and honours
+  `--policy`) at the current device snapshot; later stages print UNKNOWN
+  instead of fabricated outputs.
+- `Orchestrator::with_engines` removed; `Orchestrator::with_all` no longer
+  takes policy/routing engines; `PolicyRule.action` is a `PolicyAction`;
+  `PolicyResult` gains `route`; `CompletionRequest` gains `thinking`.
+- The SDK streaming fast path makes one `resolve_stage` decision (one policy
+  evaluation, one resource snapshot) instead of separate policy and target
+  calls.
 
 ### Fixed
 
@@ -24,6 +129,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hard errors `-1` through `-4`; the preserved callback error now takes
   precedence. Closing a Bolt pull stream also drains its worker before model
   teardown, preventing a race with an in-flight Metal context (#501).
+- `Orchestrator::load_policies` (and therefore `xybrid run --policy`) wrote
+  into an engine nothing consulted, so policies never affected routing.
+- The CLI mapped any provider other than openai/anthropic/google to OpenAI, so
+  `provider: deepseek` silently called the wrong API.
+- `Orchestrator::new()` / the SDK `Pipeline` served cloud stages from a fake
+  adapter that slept 50 ms and returned `cloud-output-<text>`; the real
+  OpenAI-compatible adapter is registered now, and a provider-less cloud stage
+  fails honestly.
+- `xybrid_sdk::init().gateway_url(..)` / `set_gateway_url` (and Flutter's
+  `Xybrid.setGatewayUrl`) wrote an SDK-local cell that no pipeline read, so an
+  SDK pipeline cloud stage without a stage-level `gateway_url` was sent to the
+  ambient/production gateway — with the Xybrid bearer key — instead of the
+  configured one. The setting now lives in the core cell
+  (`xybrid_core::cloud::set_xybrid_gateway_url`), consulted ahead of
+  `XYBRID_GATEWAY_URL`, and a loopback regression test asserts the receiving
+  endpoint.
+- `input.kind == "<v>"` matched a text payload equal to the literal.
+- Shared YAML generation options only reached the cloud leg; the local
+  template executor now receives them too.
+- `backend: direct` with `anthropic` ignored the stage's `api_key` and
+  `gateway_url`; both now reach the native client. Google and ElevenLabs,
+  which have no native direct client, are rejected when the bundle loads
+  instead of failing at request time.
+- An HTTP 200 with no answer text (empty `content`, no choices) is a
+  non-retryable parse error instead of a silent empty success.
 
 ### Planned
 
