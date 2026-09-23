@@ -233,23 +233,59 @@ object Xybrid {
     @JvmStatic
     fun extractedModelIds(): List<String> = ai.xybrid.cacheListExtractedModelIds()
 
-    /** Throws until persistent cache retention is supported. Use per-model eviction. */
-    @JvmStatic
-    fun cleanExpiredModelCache(): UInt = ai.xybrid.cacheCleanExpired()
-
     /**
      * Remove every managed cache entry for [modelId].
      * Do not call concurrently with a load of the same model.
      */
     @JvmStatic
-    fun removeCachedModel(modelId: String): UInt = ai.xybrid.cacheRemoveModel(modelId)
+    fun removeCachedModel(modelId: String): Int = ai.xybrid.cacheRemoveModel(modelId).toInt()
 
     /**
      * Clear all managed model-cache storage.
      * Do not call concurrently with any model load.
+     *
+     * Like [removeCachedModel], this returns `Int` rather than the generated
+     * `UInt` so the `@JvmStatic` name is not mangled for Java callers.
      */
     @JvmStatic
-    fun clearModelCache(): UInt = ai.xybrid.cacheClear()
+    fun clearModelCache(): Int = ai.xybrid.cacheClear().toInt()
+
+    // Model storage, off the caller's thread. Every storage call walks or
+    // deletes the cache directory on disk, which is too slow for the main
+    // thread once a device holds a few models.
+
+    /** [modelCacheStatus] on [Dispatchers.IO]. */
+    suspend fun modelCacheStatusAsync(): XybridCacheStatus =
+        withContext(Dispatchers.IO) { modelCacheStatus() }
+
+    /** [modelCacheEntries] on [Dispatchers.IO]. */
+    suspend fun modelCacheEntriesAsync(): List<XybridCacheEntry> =
+        withContext(Dispatchers.IO) { modelCacheEntries() }
+
+    /** [hasCachedModelData] on [Dispatchers.IO]. */
+    suspend fun hasCachedModelDataAsync(modelId: String): Boolean =
+        withContext(Dispatchers.IO) { hasCachedModelData(modelId) }
+
+    /** [cachedModelPath] on [Dispatchers.IO]. */
+    suspend fun cachedModelPathAsync(modelId: String): String? =
+        withContext(Dispatchers.IO) { cachedModelPath(modelId) }
+
+    /** [extractedModelIds] on [Dispatchers.IO]. */
+    suspend fun extractedModelIdsAsync(): List<String> =
+        withContext(Dispatchers.IO) { extractedModelIds() }
+
+    /**
+     * [removeCachedModel] on [Dispatchers.IO].
+     * Do not call concurrently with a load of the same model.
+     */
+    suspend fun removeCachedModelAsync(modelId: String): Int =
+        withContext(Dispatchers.IO) { removeCachedModel(modelId) }
+
+    /**
+     * [clearModelCache] on [Dispatchers.IO].
+     * Do not call concurrently with any model load.
+     */
+    suspend fun clearModelCacheAsync(): Int = withContext(Dispatchers.IO) { clearModelCache() }
 
     private fun registerPlatformObservers(appContext: Context) {
         val batteryReceiver = object : BroadcastReceiver() {

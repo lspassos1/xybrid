@@ -171,11 +171,6 @@ impl XybridSdkClient {
         facade::cache_list_extracted_model_ids().map_err(|error| error.to_string())
     }
 
-    /// Reports an error until persistent cache retention is supported.
-    pub fn clean_expired_cache() -> Result<u32, String> {
-        facade::cache_clean_expired().map_err(|error| error.to_string())
-    }
-
     /// Removes every managed cache entry for one model.
     ///
     /// Do not call concurrently with a load of the same model.

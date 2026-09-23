@@ -253,12 +253,6 @@ namespace Xybrid
             return CacheCall(() => XybridBolt.XybridBolt.CacheListExtractedModelIds());
         }
 
-        /// <summary>Throws until persistent retention is supported. Use per-model eviction.</summary>
-        public static uint CleanExpiredModelCache()
-        {
-            return CacheCall(() => XybridBolt.XybridBolt.CacheCleanExpired());
-        }
-
         /// <summary>
         /// Removes every managed cache entry for one model. Do not call this while
         /// the same model is loading.

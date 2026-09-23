@@ -851,27 +851,6 @@ namespace XybridBolt
         }
 
         /// <summary>
-        /// Reports a configuration error until persistent cache retention is supported.
-        /// </summary>
-        public static uint CacheCleanExpired()
-        {
-            FfiBuf boltffiErrorBuffer = NativeMethods.NativeCacheCleanExpired(out uint boltffiResult);
-            if (boltffiErrorBuffer.ptr != 0)
-            {
-                try
-                {
-                    WireReader boltffiErrorReader = new WireReader(boltffiErrorBuffer);
-                    throw new global::XybridBolt.XybridErrorException(global::XybridBolt.XybridError.Decode(boltffiErrorReader));
-                }
-                finally
-                {
-                    NativeMethods.FreeBuf(boltffiErrorBuffer);
-                }
-            }
-            return boltffiResult;
-        }
-
-        /// <summary>
         /// Removes every managed cache entry for one model.
         ///
         /// Do not call concurrently with a load of the same model.
@@ -1439,9 +1418,6 @@ namespace XybridBolt
 
         [DllImport(LibName, EntryPoint = "boltffi_release_class_xybrid_bolt_xybrid_telemetry_config")]
         internal static extern void NativeXybridTelemetryConfigRelease(ulong handle);
-
-        [DllImport(LibName, EntryPoint = "boltffi_function_xybrid_bolt_cache_clean_expired")]
-        internal static extern FfiBuf NativeCacheCleanExpired(out uint boltffiResult);
 
         [DllImport(LibName, EntryPoint = "boltffi_function_xybrid_bolt_cache_clear")]
         internal static extern FfiBuf NativeCacheClear(out uint boltffiResult);

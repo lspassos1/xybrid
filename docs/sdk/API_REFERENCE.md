@@ -98,8 +98,6 @@ class Xybrid {
   static Future<bool> hasCachedModelData(String modelId);
   static Future<String?> cachedModelPath(String modelId);
   static Future<List<String>> extractedModelIds();
-  // Currently reports an error: persistent retention is not implemented.
-  static Future<int> cleanExpiredModelCache();
   static Future<int> removeCachedModel(String modelId);
   static Future<int> clearModelCache();
 
@@ -128,9 +126,11 @@ object Xybrid {
   fun hasCachedModelData(modelId: String): Boolean
   fun cachedModelPath(modelId: String): String?
   fun extractedModelIds(): List<String>
-  fun cleanExpiredModelCache(): UInt
-  fun removeCachedModel(modelId: String): UInt
-  fun clearModelCache(): UInt
+  fun removeCachedModel(modelId: String): Int
+  fun clearModelCache(): Int
+
+  // Each also has a suspend twin that runs on Dispatchers.IO:
+  // modelCacheStatusAsync(), removeCachedModelAsync(modelId), ...
 }
 ```
 
@@ -148,9 +148,11 @@ extension Xybrid {
   static func hasCachedModelData(_ modelId: String) throws -> Bool
   static func cachedModelPath(_ modelId: String) throws -> String?
   static func extractedModelIds() throws -> [String]
-  static func cleanExpiredModelCache() throws -> UInt32
   static func removeCachedModel(_ modelId: String) throws -> UInt32
   static func clearModelCache() throws -> UInt32
+
+  // Each also has an async twin that runs off the calling actor:
+  // modelCacheStatusAsync(), removeCachedModelAsync(_:), ...
 }
 ```
 
@@ -162,7 +164,6 @@ XybridCacheEntry[] entries = XybridClient.ModelCacheEntries();
 bool present = XybridClient.HasCachedModelData(modelId);
 string path = XybridClient.CachedModelPath(modelId); // null when absent
 string[] ready = XybridClient.ExtractedModelIds();
-uint expired = XybridClient.CleanExpiredModelCache();
 uint removed = XybridClient.RemoveCachedModel(modelId);
 uint cleared = XybridClient.ClearModelCache();
 ```
@@ -198,7 +199,6 @@ the cache while any model load is in flight.
 | `hasCachedModelData()` | ✅ | ✅ | ✅ | ✅ |
 | `cachedModelPath()` | ✅ | ✅ | ✅ | ✅ |
 | `extractedModelIds()` | ✅ | ✅ | ✅ | ✅ |
-| `cleanExpiredModelCache()` | ✅ | ✅ | ✅ | ✅ |
 | `removeCachedModel()` | ✅ | ✅ | ✅ | ✅ |
 | `clearModelCache()` | ✅ | ✅ | ✅ | ✅ |
 

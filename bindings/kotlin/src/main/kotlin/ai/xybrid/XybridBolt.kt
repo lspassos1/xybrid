@@ -1012,7 +1012,6 @@ private object Native {
     @JvmStatic external fun boltffi_function_xybrid_bolt_cache_is_model_cached(model_id: java.nio.ByteBuffer, __boltffi_model_id_len: Int): Boolean
     @JvmStatic external fun boltffi_function_xybrid_bolt_cache_model_path(model_id: java.nio.ByteBuffer, __boltffi_model_id_len: Int): ByteArray?
     @JvmStatic external fun boltffi_function_xybrid_bolt_cache_list_extracted_model_ids(): ByteArray?
-    @JvmStatic external fun boltffi_function_xybrid_bolt_cache_clean_expired(): Int
     @JvmStatic external fun boltffi_function_xybrid_bolt_cache_remove_model(model_id: java.nio.ByteBuffer, __boltffi_model_id_len: Int): Int
     @JvmStatic external fun boltffi_function_xybrid_bolt_cache_clear(): Int
     @JvmStatic external fun boltffi_function_xybrid_bolt_set_binding(binding: java.nio.ByteBuffer, __boltffi_binding_len: Int): Unit
@@ -4208,13 +4207,6 @@ fun cacheListExtractedModelIds(): List<String> {
     val __boltffi_result = try { Native.boltffi_function_xybrid_bolt_cache_list_extracted_model_ids() } catch (__boltffi_error: BoltFfiErrorBufferException) { run { val __boltffi_error_reader = WireReader(__boltffi_error.bytes); throw XybridError.fromReader(__boltffi_error_reader) } } ?: throw IllegalStateException("null buffer returned")
     val __boltffi_reader = WireReader(__boltffi_result)
     return __boltffi_reader.readSequence({ __boltffi_reader -> __boltffi_reader.readString() })
-}
-
-/**
- * Reports a configuration error until persistent cache retention is supported.
- */
-fun cacheCleanExpired(): UInt {
-    return try { Native.boltffi_function_xybrid_bolt_cache_clean_expired() } catch (__boltffi_error: BoltFfiErrorBufferException) { run { val __boltffi_error_reader = WireReader(__boltffi_error.bytes); throw XybridError.fromReader(__boltffi_error_reader) } }.toUInt()
 }
 
 /**

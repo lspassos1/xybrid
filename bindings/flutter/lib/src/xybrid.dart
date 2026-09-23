@@ -273,11 +273,6 @@ class Xybrid {
   static Future<List<String>> extractedModelIds() =>
       XybridSdkClient.listExtractedModelIds();
 
-  /// Reports an error until persistent cache retention is supported.
-  /// Use [removeCachedModel] for explicit eviction instead.
-  static Future<int> cleanExpiredModelCache() =>
-      XybridSdkClient.cleanExpiredCache();
-
   /// Removes all managed cache entries for [modelId].
   ///
   /// Returns how many physical entries were deleted. Do not call this while the

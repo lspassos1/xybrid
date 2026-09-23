@@ -2361,17 +2361,6 @@ public func cacheListExtractedModelIds() throws -> [String] {
     return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readArray { boltffiReader in boltffiReader.readString() } }
 }
 
-/// Reports a configuration error until persistent cache retention is supported.
-public func cacheCleanExpired() throws -> UInt32 {
-    var boltffiResult: UInt32 = UInt32()
-    let boltffiError = boltffi_function_xybrid_bolt_cache_clean_expired(&boltffiResult)
-    if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
-        defer { boltffi_free_buf(boltffiError) }
-        throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
-    }
-    return boltffiResult
-}
-
 /// Removes every managed cache entry for one model.
 ///
 /// Do not call concurrently with a load of the same model.

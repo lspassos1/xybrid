@@ -219,14 +219,10 @@ public enum Xybrid {
         try cacheListExtractedModelIds()
     }
 
-    /// Throws until persistent cache retention is supported. Use per-model eviction.
-    public static func cleanExpiredModelCache() throws -> UInt32 {
-        try cacheCleanExpired()
-    }
-
     /// Remove every managed cache entry for one model.
     ///
     /// Do not call concurrently with a load of the same model.
+    @discardableResult
     public static func removeCachedModel(_ modelId: String) throws -> UInt32 {
         try cacheRemoveModel(modelId: modelId)
     }
@@ -234,8 +230,56 @@ public enum Xybrid {
     /// Clear all managed model-cache storage.
     ///
     /// Do not call concurrently with any model load.
+    @discardableResult
     public static func clearModelCache() throws -> UInt32 {
         try cacheClear()
+    }
+
+    // MARK: Model storage, off the caller's thread
+    //
+    // Every storage call walks or deletes the cache directory on disk, which is
+    // too slow for the main actor once a device holds a few models. These run
+    // the same calls on a detached background task.
+
+    /// ``modelCacheStatus()`` without blocking the calling thread or actor.
+    public static func modelCacheStatusAsync() async throws -> XybridCacheStatus {
+        try await Task.detached { try cacheStatus() }.value
+    }
+
+    /// ``modelCacheEntries()`` without blocking the calling thread or actor.
+    public static func modelCacheEntriesAsync() async throws -> [XybridCacheEntry] {
+        try await Task.detached { try cacheEntries() }.value
+    }
+
+    /// ``hasCachedModelData(_:)`` without blocking the calling thread or actor.
+    public static func hasCachedModelDataAsync(_ modelId: String) async throws -> Bool {
+        try await Task.detached { try cacheIsModelCached(modelId: modelId) }.value
+    }
+
+    /// ``cachedModelPath(_:)`` without blocking the calling thread or actor.
+    public static func cachedModelPathAsync(_ modelId: String) async throws -> String? {
+        try await Task.detached { try cacheModelPath(modelId: modelId) }.value
+    }
+
+    /// ``extractedModelIds()`` without blocking the calling thread or actor.
+    public static func extractedModelIdsAsync() async throws -> [String] {
+        try await Task.detached { try cacheListExtractedModelIds() }.value
+    }
+
+    /// ``removeCachedModel(_:)`` without blocking the calling thread or actor.
+    ///
+    /// Do not call concurrently with a load of the same model.
+    @discardableResult
+    public static func removeCachedModelAsync(_ modelId: String) async throws -> UInt32 {
+        try await Task.detached { try cacheRemoveModel(modelId: modelId) }.value
+    }
+
+    /// ``clearModelCache()`` without blocking the calling thread or actor.
+    ///
+    /// Do not call concurrently with any model load.
+    @discardableResult
+    public static func clearModelCacheAsync() async throws -> UInt32 {
+        try await Task.detached { try cacheClear() }.value
     }
 
     private static func registerPlatformObservers() {

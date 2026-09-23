@@ -1057,8 +1057,6 @@ def cache_model_path(model_id: str) -> str | None:
     """Resolves the preferred local cache path for a model, if present."""
 def cache_list_extracted_model_ids() -> list[str]:
     """Lists model IDs extracted, validated, and ready to run offline."""
-def cache_clean_expired() -> int:
-    """Reports a configuration error until persistent cache retention is supported."""
 def cache_remove_model(model_id: str) -> int:
     """Removes every managed cache entry for one model.
 

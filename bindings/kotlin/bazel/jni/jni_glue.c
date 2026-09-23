@@ -1924,21 +1924,6 @@ JNIEXPORT jbyteArray JNICALL Java_ai_xybrid_Native_boltffi_1function_1xybrid_1bo
     return boltffi_jni_buffer_to_byte_array(env, __boltffi_return);
 }
 
-JNIEXPORT jint JNICALL Java_ai_xybrid_Native_boltffi_1function_1xybrid_1bolt_1cache_1clean_1expired(JNIEnv *env, jclass cls) {
-    (void)cls;
-
-    uint32_t __boltffi_return = (uint32_t){0};
-
-    FfiBuf_u8 error = boltffi_function_xybrid_bolt_cache_clean_expired(&__boltffi_return);
-
-    if (error.ptr != NULL || error.len != 0) {
-        boltffi_jni_throw_error_buffer(env, error);
-        return 0;
-    }
-
-    return (jint)__boltffi_return;
-}
-
 JNIEXPORT jint JNICALL Java_ai_xybrid_Native_boltffi_1function_1xybrid_1bolt_1cache_1remove_1model(JNIEnv *env, jclass cls, jobject model_id, jint __boltffi_model_id_len) {
     (void)cls;
 

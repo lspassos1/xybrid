@@ -44,7 +44,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
     default_rust_auto_opaque = RustAutoOpaqueMoi,
 );
 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.11.1";
-pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1066572205;
+pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1418470156;
 
 // Section: executor
 
@@ -3046,38 +3046,6 @@ fn wire__crate__api__sdk_client__XybridSdkClient_cached_model_path_impl(
         },
     )
 }
-fn wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
-    port_: flutter_rust_bridge::for_generated::MessagePort,
-    ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
-    rust_vec_len_: i32,
-    data_len_: i32,
-) {
-    FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec, _, _>(
-        flutter_rust_bridge::for_generated::TaskInfo {
-            debug_name: "XybridSdkClient_clean_expired_cache",
-            port: Some(port_),
-            mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal,
-        },
-        move || {
-            let message = unsafe {
-                flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(
-                    ptr_,
-                    rust_vec_len_,
-                    data_len_,
-                )
-            };
-            let mut deserializer =
-                flutter_rust_bridge::for_generated::SseDeserializer::new(message);
-            deserializer.end();
-            move |context| {
-                transform_result_sse::<_, String>((move || {
-                    let output_ok = crate::api::sdk_client::XybridSdkClient::clean_expired_cache()?;
-                    Ok(output_ok)
-                })())
-            }
-        },
-    )
-}
 fn wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
     port_: flutter_rust_bridge::for_generated::MessagePort,
     ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,
@@ -5073,31 +5041,25 @@ fn pde_ffi_dispatcher_primary_impl(
             rust_vec_len,
             data_len,
         ),
-        69 => wire__crate__api__sdk_client__XybridSdkClient_clean_expired_cache_impl(
+        69 => wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        70 => wire__crate__api__sdk_client__XybridSdkClient_clear_model_cache_impl(
+        72 => wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        73 => wire__crate__api__sdk_client__XybridSdkClient_has_cached_model_data_impl(
+        79 => wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
             port,
             ptr,
             rust_vec_len,
             data_len,
         ),
-        80 => wire__crate__api__sdk_client__XybridSdkClient_list_extracted_model_ids_impl(
-            port,
-            ptr,
-            rust_vec_len,
-            data_len,
-        ),
-        82 => wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
+        81 => wire__crate__api__sdk_client__XybridSdkClient_remove_cached_model_impl(
             port,
             ptr,
             rust_vec_len,
@@ -5257,90 +5219,90 @@ fn pde_ffi_dispatcher_sync_impl(
             rust_vec_len,
             data_len,
         ),
-        71 => wire__crate__api__sdk_client__XybridSdkClient_configure_platform_telemetry_impl(
+        70 => wire__crate__api__sdk_client__XybridSdkClient_configure_platform_telemetry_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        72 => wire__crate__api__sdk_client__XybridSdkClient_flush_platform_telemetry_impl(
+        71 => wire__crate__api__sdk_client__XybridSdkClient_flush_platform_telemetry_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        74 => wire__crate__api__sdk_client__XybridSdkClient_init_sdk_cache_dir_impl(
+        73 => wire__crate__api__sdk_client__XybridSdkClient_init_sdk_cache_dir_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        75 => wire__crate__api__sdk_client__XybridSdkClient_init_telemetry_impl(
+        74 => wire__crate__api__sdk_client__XybridSdkClient_init_telemetry_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        76 => wire__crate__api__sdk_client__XybridSdkClient_is_auto_release_enabled_impl(
+        75 => wire__crate__api__sdk_client__XybridSdkClient_is_auto_release_enabled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        77 => wire__crate__api__sdk_client__XybridSdkClient_is_model_cached_impl(
+        76 => wire__crate__api__sdk_client__XybridSdkClient_is_model_cached_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        78 => wire__crate__api__sdk_client__XybridSdkClient_is_speculative_cloud_enabled_impl(
+        77 => wire__crate__api__sdk_client__XybridSdkClient_is_speculative_cloud_enabled_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        79 => wire__crate__api__sdk_client__XybridSdkClient_is_telemetry_initialized_impl(
+        78 => wire__crate__api__sdk_client__XybridSdkClient_is_telemetry_initialized_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        81 => wire__crate__api__sdk_client__XybridSdkClient_release_memory_impl(
+        80 => wire__crate__api__sdk_client__XybridSdkClient_release_memory_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        83 => wire__crate__api__sdk_client__XybridSdkClient_runtime_features_impl(
+        82 => wire__crate__api__sdk_client__XybridSdkClient_runtime_features_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        84 => wire__crate__api__sdk_client__XybridSdkClient_set_api_key_impl(
+        83 => wire__crate__api__sdk_client__XybridSdkClient_set_api_key_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        85 => wire__crate__api__sdk_client__XybridSdkClient_set_auto_release_impl(
+        84 => wire__crate__api__sdk_client__XybridSdkClient_set_auto_release_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        86 => wire__crate__api__sdk_client__XybridSdkClient_set_gateway_url_impl(
+        85 => wire__crate__api__sdk_client__XybridSdkClient_set_gateway_url_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        87 => wire__crate__api__sdk_client__XybridSdkClient_set_platform_url_impl(
+        86 => wire__crate__api__sdk_client__XybridSdkClient_set_platform_url_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        88 => wire__crate__api__sdk_client__XybridSdkClient_set_speculative_cloud_impl(
+        87 => wire__crate__api__sdk_client__XybridSdkClient_set_speculative_cloud_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        89 => wire__crate__api__model__ffi_generation_config_creative_impl(
+        88 => wire__crate__api__model__ffi_generation_config_creative_impl(
             ptr,
             rust_vec_len,
             data_len,
         ),
-        90 => {
+        89 => {
             wire__crate__api__model__ffi_generation_config_greedy_impl(ptr, rust_vec_len, data_len)
         }
-        91 => wire__crate__api__model__json_schema_to_gbnf_impl(ptr, rust_vec_len, data_len),
+        90 => wire__crate__api__model__json_schema_to_gbnf_impl(ptr, rust_vec_len, data_len),
         _ => unreachable!(),
     }
 }

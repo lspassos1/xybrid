@@ -232,8 +232,6 @@ typedef FfiBuf_u8 (*boltffi_python_boltffi_function_xybrid_bolt_cache_model_path
 static boltffi_python_boltffi_function_xybrid_bolt_cache_model_path_fn boltffi_python_boltffi_function_xybrid_bolt_cache_model_path = NULL;
 typedef FfiBuf_u8 (*boltffi_python_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids_fn)(FfiBuf_u8 *);
 static boltffi_python_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids_fn boltffi_python_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids = NULL;
-typedef FfiBuf_u8 (*boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired_fn)(uint32_t *);
-static boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired_fn boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired = NULL;
 typedef FfiBuf_u8 (*boltffi_python_boltffi_function_xybrid_bolt_cache_remove_model_fn)(const uint8_t *, uintptr_t, uint32_t *);
 static boltffi_python_boltffi_function_xybrid_bolt_cache_remove_model_fn boltffi_python_boltffi_function_xybrid_bolt_cache_remove_model = NULL;
 typedef FfiBuf_u8 (*boltffi_python_boltffi_function_xybrid_bolt_cache_clear_fn)(uint32_t *);
@@ -425,7 +423,6 @@ static void boltffi_python_clear_symbols(void) {
     boltffi_python_boltffi_function_xybrid_bolt_cache_is_model_cached = NULL;
     boltffi_python_boltffi_function_xybrid_bolt_cache_model_path = NULL;
     boltffi_python_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids = NULL;
-    boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired = NULL;
     boltffi_python_boltffi_function_xybrid_bolt_cache_remove_model = NULL;
     boltffi_python_boltffi_function_xybrid_bolt_cache_clear = NULL;
     boltffi_python_boltffi_function_xybrid_bolt_set_binding = NULL;
@@ -1617,16 +1614,6 @@ static int boltffi_python_bind_symbols(void) {
     if (boltffi_python_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids == NULL) {
         boltffi_python_unload_library();
         PyErr_SetString(PyExc_ImportError, "failed to resolve native symbol " "boltffi_function_xybrid_bolt_cache_list_extracted_model_ids");
-        return 0;
-    }
-#ifdef _WIN32
-    boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired = (boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired_fn)GetProcAddress(boltffi_python_library_handle, "boltffi_function_xybrid_bolt_cache_clean_expired");
-#else
-    boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired = (boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired_fn)dlsym(boltffi_python_library_handle, "boltffi_function_xybrid_bolt_cache_clean_expired");
-#endif
-    if (boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired == NULL) {
-        boltffi_python_unload_library();
-        PyErr_SetString(PyExc_ImportError, "failed to resolve native symbol " "boltffi_function_xybrid_bolt_cache_clean_expired");
         return 0;
     }
 #ifdef _WIN32
@@ -9674,35 +9661,6 @@ done:
 }
 
 
-static PyObject *boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_clean_expired(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
-    uint32_t return_success;
-    FfiBuf_u8 return_error = {0};
-    PyObject *error = NULL;
-    PyObject *result = NULL;
-    (void)self;
-    if (nargs != 0) {
-        PyErr_Format(PyExc_TypeError, "cache_clean_expired() takes 0 positional arguments but %zd were given", nargs);
-        goto done;
-    }
-    if (boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired == NULL) {
-        PyErr_SetString(PyExc_ImportError, "native library is not initialized");
-        goto done;
-    }
-    return_error = boltffi_python_boltffi_function_xybrid_bolt_cache_clean_expired(&return_success);
-    if (return_error.len != 0) {
-        error = boltffi_python_decode_owned_raw_wire(return_error);
-        if (error != NULL) {
-            PyErr_SetObject(PyExc_RuntimeError, error);
-        }
-        goto done;
-    }
-    result = boltffi_python_box_u32(return_success);
-done:
-    Py_XDECREF(error);
-    return result;
-}
-
-
 static PyObject *boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_remove_model(PyObject *self, PyObject *const *args, Py_ssize_t nargs) {
     PyObject *model_id_wire = NULL;
     const uint8_t *model_id_ptr = NULL;
@@ -10608,7 +10566,6 @@ static PyMethodDef boltffi_python_methods[] = {
     {"cache_is_model_cached", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_is_model_cached, METH_FASTCALL, NULL},
     {"cache_model_path", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_model_path, METH_FASTCALL, NULL},
     {"cache_list_extracted_model_ids", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_list_extracted_model_ids, METH_FASTCALL, NULL},
-    {"cache_clean_expired", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_clean_expired, METH_FASTCALL, NULL},
     {"cache_remove_model", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_remove_model, METH_FASTCALL, NULL},
     {"cache_clear", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_cache_clear, METH_FASTCALL, NULL},
     {"set_binding", (PyCFunction)boltffi_python_callable_wrapper_boltffi_function_xybrid_bolt_set_binding, METH_FASTCALL, NULL},

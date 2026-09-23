@@ -170,13 +170,15 @@ generated snake-case functions directly (`cache_status`, `cache_entries`,
 `cache_remove_model`, and `cache_clear`).
 
 Flutter's new cache operations return Futures and run filesystem work off the
-UI isolate. Other bindings expose synchronous calls; use a worker for large
-cache scans or deletions.
+UI isolate. Swift and Kotlin pair every call with an `…Async` twin
+(`modelCacheStatusAsync()`, `removeCachedModelAsync(...)`) that runs off the
+calling thread; Unity's calls are synchronous, so run large scans or deletions
+on a worker.
 
-`cleanExpiredModelCache` currently reports an error without changing the cache.
-The SDK does not yet persist retention metadata and cannot safely distinguish
-expired downloads from local models after a restart. Use targeted eviction in
-the meantime; file age alone is not a reason to delete an offline model.
+There is no expiry cleanup in the bindings: the SDK does not yet persist
+retention metadata, so it cannot tell an expired download from a local model
+after a restart. Use targeted eviction; file age alone is not a reason to
+delete an offline model.
 
 For Rust callers, `CacheManager` exposes the underlying operations:
 

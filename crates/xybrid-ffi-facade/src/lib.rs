@@ -2833,18 +2833,6 @@ pub fn cache_list_extracted_model_ids() -> Result<Vec<String>> {
     Ok(open_cache()?.list_extracted_model_ids())
 }
 
-/// Reserved for expired-entry cleanup once retention metadata is persisted.
-///
-/// # Errors
-/// Returns `ConfigError`: the SDK currently classifies all scanned entries as
-/// local and cannot identify expired downloads after a restart. Use explicit
-/// per-model eviction instead. This operation does not change the cache.
-pub fn cache_clean_expired() -> Result<u32> {
-    Err(Error::ConfigError {
-        message: "cache expiry is unavailable until retention metadata is persisted; use per-model eviction instead".into(),
-    })
-}
-
 /// Removes every managed cache entry for one model.
 ///
 /// Do not call concurrently with a load of the same model.
@@ -3398,14 +3386,6 @@ mod tests {
         assert_eq!(status.extracted_model_count, 0);
         assert_eq!(status.entry_count, 1);
         assert!(status.total_size_bytes > 0);
-    }
-
-    #[test]
-    fn cache_expiry_reports_unavailable_instead_of_successful_noop() {
-        assert!(matches!(
-            cache_clean_expired(),
-            Err(Error::ConfigError { .. })
-        ));
     }
 
     #[test]

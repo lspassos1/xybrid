@@ -28,10 +28,6 @@ abstract class XybridSdkClient implements RustOpaqueInterface {
       XybridRustLib.instance.api
           .crateApiSdkClientXybridSdkClientCachedModelPath(modelId: modelId);
 
-  /// Reports an error until persistent cache retention is supported.
-  static Future<int> cleanExpiredCache() => XybridRustLib.instance.api
-      .crateApiSdkClientXybridSdkClientCleanExpiredCache();
-
   /// Clears all managed model-cache storage.
   ///
   /// Do not call concurrently with any model load.

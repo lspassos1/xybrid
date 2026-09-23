@@ -22,10 +22,6 @@ class _CacheApi implements XybridRustLibApi {
   }
 
   @override
-  Future<int> crateApiSdkClientXybridSdkClientCleanExpiredCache() =>
-      Future.error(StateError('persistent retention is unavailable'));
-
-  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -52,9 +48,5 @@ void main() {
     expect(api.removedModel, 'owner/repo');
     api.removal.complete(2);
     expect(await pending, 2);
-  });
-
-  test('unsupported expiry is propagated as an error', () async {
-    await expectLater(Xybrid.cleanExpiredModelCache(), throwsStateError);
   });
 }

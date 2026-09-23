@@ -3183,9 +3183,6 @@ def cache_model_path(model_id: str) -> str | None:
 def cache_list_extracted_model_ids() -> list[str]:
     """Lists model IDs extracted, validated, and ready to run offline."""
     return _boltffi_read_wire(_boltffi_call(_boltffi_read_09404a3c98b3f16c, lambda: _native.cache_list_extracted_model_ids()), lambda reader: reader.sequence(lambda: reader.string()))
-def cache_clean_expired() -> int:
-    """Reports a configuration error until persistent cache retention is supported."""
-    return _boltffi_call(_boltffi_read_09404a3c98b3f16c, lambda: _native.cache_clean_expired())
 def cache_remove_model(model_id: str) -> int:
     """Removes every managed cache entry for one model.
 
@@ -3358,7 +3355,6 @@ __all__ = [
     "cache_is_model_cached",
     "cache_model_path",
     "cache_list_extracted_model_ids",
-    "cache_clean_expired",
     "cache_remove_model",
     "cache_clear",
     "set_binding",

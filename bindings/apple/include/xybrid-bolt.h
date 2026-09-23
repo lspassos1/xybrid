@@ -247,7 +247,6 @@ FfiBuf_u8 boltffi_function_xybrid_bolt_cache_entries(FfiBuf_u8 *return_out);
 FfiBuf_u8 boltffi_function_xybrid_bolt_cache_is_model_cached(const uint8_t *model_id_ptr, uintptr_t model_id_len, bool *return_out);
 FfiBuf_u8 boltffi_function_xybrid_bolt_cache_model_path(const uint8_t *model_id_ptr, uintptr_t model_id_len, FfiBuf_u8 *return_out);
 FfiBuf_u8 boltffi_function_xybrid_bolt_cache_list_extracted_model_ids(FfiBuf_u8 *return_out);
-FfiBuf_u8 boltffi_function_xybrid_bolt_cache_clean_expired(uint32_t *return_out);
 FfiBuf_u8 boltffi_function_xybrid_bolt_cache_remove_model(const uint8_t *model_id_ptr, uintptr_t model_id_len, uint32_t *return_out);
 FfiBuf_u8 boltffi_function_xybrid_bolt_cache_clear(uint32_t *return_out);
 FfiStatus boltffi_function_xybrid_bolt_set_binding(const uint8_t *binding_ptr, uintptr_t binding_len);
