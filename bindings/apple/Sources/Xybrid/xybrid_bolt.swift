@@ -384,24 +384,146 @@ public struct XybridResult: Hashable, Equatable, Sendable {
     }
 }
 
-/// Download progress + state in one consistent read.
+/// Download progress, bytes and state in one consistent read.
+///
+/// `progress` is aggregated across every artifact the model needs (weights
+/// plus companions such as a vision projector), never moves backwards, and
+/// reaches 1.0 only alongside `Ready`. `totalBytes` is null when the source
+/// declares no size — a Hugging Face repo, or a registry entry without one —
+/// in which case `downloadedBytes` is still exact and `progress` is coarser.
+///
+/// Derives `Copy` because it is carried as a stream item.
 public struct XybridDownloadStatus: Hashable, Equatable, Sendable {
     public var state: XybridDownloadState
     /// 0.0..=1.0.
     public var progress: Float
+    /// Bytes written so far, across every artifact.
+    public var downloadedBytes: UInt64
+    /// Declared total across every artifact, or null when unknown.
+    public var totalBytes: UInt64?
 
-    public init(state: XybridDownloadState, progress: Float) {
+    public init(
+        state: XybridDownloadState,
+        progress: Float,
+        downloadedBytes: UInt64,
+        totalBytes: UInt64?
+    ) {
         self.state = state
         self.progress = progress
+        self.downloadedBytes = downloadedBytes
+        self.totalBytes = totalBytes
     }
 
     @inlinable static func decode(from reader: inout WireReader) -> XybridDownloadStatus {
-        XybridDownloadStatus(state: XybridDownloadState(rawValue: reader.readI32())!, progress: reader.readF32())
+        XybridDownloadStatus(
+            state: XybridDownloadState(rawValue: reader.readI32())!,
+            progress: reader.readF32(),
+            downloadedBytes: reader.readU64(),
+            totalBytes: reader.readOptional { reader in reader.readU64() }
+        )
     }
 
     @inlinable func encode(to writer: inout WireWriter) {
         writer.writeI32(self.state.rawValue)
         writer.writeF32(self.progress)
+        writer.writeU64(self.downloadedBytes)
+        writer.writeOptional(self.totalBytes) { writer, boltffiValue0 in writer.writeU64(boltffiValue0) }
+    }
+}
+
+/// What one stage of a pipeline run produced.
+public struct XybridStageResult: Hashable, Equatable, Sendable {
+    /// Stage identifier from the pipeline YAML (`id:`), or the model ID when
+    /// the stage declares none. Matches [`XybridPipeline::stage_names`].
+    public var stageId: String
+    /// This stage's output, which is also the next stage's input — the
+    /// transcript of an ASR stage, the reply of an LLM stage.
+    public var envelope: XybridEnvelope
+    public var outputType: XybridOutputType
+    public var latencyMs: UInt32
+    /// Where this stage ran. Stages of one pipeline can run in different
+    /// places.
+    public var executionTarget: XybridExecutionTarget
+    /// Generation figures (TTFT, tokens per second) when this stage is a
+    /// language model; `total_ms` is the stage latency.
+    public var metrics: XybridInferenceMetrics
+
+    public init(
+        stageId: String,
+        envelope: XybridEnvelope,
+        outputType: XybridOutputType,
+        latencyMs: UInt32,
+        executionTarget: XybridExecutionTarget,
+        metrics: XybridInferenceMetrics
+    ) {
+        self.stageId = stageId
+        self.envelope = envelope
+        self.outputType = outputType
+        self.latencyMs = latencyMs
+        self.executionTarget = executionTarget
+        self.metrics = metrics
+    }
+
+    @inlinable static func decode(from reader: inout WireReader) -> XybridStageResult {
+        XybridStageResult(
+            stageId: reader.readString(),
+            envelope: XybridEnvelope.decode(from: &reader),
+            outputType: XybridOutputType(rawValue: reader.readI32())!,
+            latencyMs: reader.readU32(),
+            executionTarget: XybridExecutionTarget(rawValue: reader.readI32())!,
+            metrics: XybridInferenceMetrics.decode(from: &reader)
+        )
+    }
+
+    @inlinable func encode(to writer: inout WireWriter) {
+        writer.writeString(self.stageId)
+        self.envelope.encode(to: &writer)
+        writer.writeI32(self.outputType.rawValue)
+        writer.writeU32(self.latencyMs)
+        writer.writeI32(self.executionTarget.rawValue)
+        self.metrics.encode(to: &writer)
+    }
+}
+
+/// Result of [`XybridPipeline::run`]: the final output plus every stage's own
+/// output, so a voice pipeline can show the transcript and the reply as well
+/// as play the audio.
+public struct XybridPipelineResult: Hashable, Equatable, Sendable {
+    /// The final stage's output — the same envelope as the last entry of
+    /// `stages`.
+    public var envelope: XybridEnvelope
+    public var outputType: XybridOutputType
+    /// Wall-clock time of the whole run.
+    public var latencyMs: UInt32
+    /// Every executed stage, in order.
+    public var stages: [XybridStageResult]
+
+    public init(
+        envelope: XybridEnvelope,
+        outputType: XybridOutputType,
+        latencyMs: UInt32,
+        stages: [XybridStageResult]
+    ) {
+        self.envelope = envelope
+        self.outputType = outputType
+        self.latencyMs = latencyMs
+        self.stages = stages
+    }
+
+    @inlinable static func decode(from reader: inout WireReader) -> XybridPipelineResult {
+        XybridPipelineResult(
+            envelope: XybridEnvelope.decode(from: &reader),
+            outputType: XybridOutputType(rawValue: reader.readI32())!,
+            latencyMs: reader.readU32(),
+            stages: reader.readArray { reader in XybridStageResult.decode(from: &reader) }
+        )
+    }
+
+    @inlinable func encode(to writer: inout WireWriter) {
+        self.envelope.encode(to: &writer)
+        writer.writeI32(self.outputType.rawValue)
+        writer.writeU32(self.latencyMs)
+        writer.writeArray(self.stages) { writer, boltffiValue0 in boltffiValue0.encode(to: &writer) }
     }
 }
 
@@ -612,6 +734,98 @@ public struct XybridCacheStatus: Hashable, Equatable, Sendable {
     }
 }
 
+/// Configuration for a live ASR session.
+///
+/// The model is not named here — it comes from the loaded `XybridModel` the
+/// session is opened on. This only configures *how* the audio is chunked.
+public struct XybridStreamingConfig: Hashable, Equatable, Sendable {
+    /// Sample rate of the audio you will feed. Must be 16000; the ASR
+    /// backends are fixed there, so anything else is rejected rather than
+    /// silently resampled.
+    public var sampleRate: UInt32
+    /// Voice-activity-detection mode.
+    public var vad: XybridVadMode
+    /// VAD sensitivity, 0.0–1.0. Ignored when `vad` is `Off`.
+    public var vadThreshold: Float
+    /// Language hint (e.g. `"en"`); null uses the model default.
+    public var language: String?
+    /// Whisper encoder context in mel frames; null uses the model default.
+    public var audioCtx: UInt32?
+
+    public init(
+        sampleRate: UInt32,
+        vad: XybridVadMode,
+        vadThreshold: Float,
+        language: String?,
+        audioCtx: UInt32?
+    ) {
+        self.sampleRate = sampleRate
+        self.vad = vad
+        self.vadThreshold = vadThreshold
+        self.language = language
+        self.audioCtx = audioCtx
+    }
+
+    @inlinable static func decode(from reader: inout WireReader) -> XybridStreamingConfig {
+        XybridStreamingConfig(
+            sampleRate: reader.readU32(),
+            vad: XybridVadMode.decode(from: &reader),
+            vadThreshold: reader.readF32(),
+            language: reader.readOptional { reader in reader.readString() },
+            audioCtx: reader.readOptional { reader in reader.readU32() }
+        )
+    }
+
+    @inlinable func encode(to writer: inout WireWriter) {
+        writer.writeU32(self.sampleRate)
+        self.vad.encode(to: &writer)
+        writer.writeF32(self.vadThreshold)
+        writer.writeOptional(self.language) { writer, boltffiValue0 in writer.writeString(boltffiValue0) }
+        writer.writeOptional(self.audioCtx) { writer, boltffiValue0 in writer.writeU32(boltffiValue0) }
+    }
+}
+
+/// A partial transcript emitted while audio is streaming.
+public struct XybridPartialResult: Hashable, Equatable, Sendable {
+    /// Best-effort transcript so far. Cumulative, not a delta — render it in
+    /// place of the previous partial rather than appending.
+    public var text: String
+    /// `true` once this span is committed and will not change.
+    public var isStable: Bool
+    /// Monotonic chunk sequence number this result corresponds to.
+    public var chunkSequence: UInt64
+    /// Audio covered so far, in milliseconds.
+    public var audioDurationMs: UInt64
+
+    public init(
+        text: String,
+        isStable: Bool,
+        chunkSequence: UInt64,
+        audioDurationMs: UInt64
+    ) {
+        self.text = text
+        self.isStable = isStable
+        self.chunkSequence = chunkSequence
+        self.audioDurationMs = audioDurationMs
+    }
+
+    @inlinable static func decode(from reader: inout WireReader) -> XybridPartialResult {
+        XybridPartialResult(
+            text: reader.readString(),
+            isStable: reader.readBool(),
+            chunkSequence: reader.readU64(),
+            audioDurationMs: reader.readU64()
+        )
+    }
+
+    @inlinable func encode(to writer: inout WireWriter) {
+        writer.writeString(self.text)
+        writer.writeBool(self.isStable)
+        writer.writeU64(self.chunkSequence)
+        writer.writeU64(self.audioDurationMs)
+    }
+}
+
 /// Errors surfaced across the FFI boundary. Variants mirror
 /// [`facade::Error`] — the facade owns the SDK→FFI translation; this enum
 /// only re-decorates it for the BoltFFI generator (proc macros must live
@@ -650,6 +864,8 @@ public enum XybridError: Hashable, Equatable, Sendable, Error {
     case unsupportedModelCapability(message: String)
     case unsupportedBackendCapability(message: String)
     case invalidImage(message: String)
+    /// The host called `cancel` — today, on a model download.
+    case cancelled(message: String)
 
     @inlinable static func decode(from reader: inout WireReader) -> XybridError {
         let tag = reader.readU32()
@@ -698,6 +914,8 @@ public enum XybridError: Hashable, Equatable, Sendable, Error {
             return .unsupportedBackendCapability(message: reader.readString())
         case 21:
             return .invalidImage(message: reader.readString())
+        case 22:
+            return .cancelled(message: reader.readString())
         default:
             fatalError("Invalid XybridError tag: \(tag)")
         }
@@ -768,6 +986,9 @@ public enum XybridError: Hashable, Equatable, Sendable, Error {
             writer.writeString(message)
         case let .invalidImage(message):
             writer.writeU32(21)
+            writer.writeString(message)
+        case let .cancelled(message):
+            writer.writeU32(22)
             writer.writeString(message)
         }
     }
@@ -878,12 +1099,16 @@ public enum XybridExecutionTarget: Int32, Hashable, Sendable, CaseIterable {
     }
 }
 
-/// Lifecycle of the background download behind a speculative load.
+/// Lifecycle of a model download — a standalone [`XybridDownload`] or
+/// the background download behind a speculative load.
 public enum XybridDownloadState: Int32, Hashable, Sendable, CaseIterable {
     case downloading = 0
     case ready = 1
-    /// Download failed; the cloud keeps serving and `isLoaded` never flips.
+    /// Download failed; for a speculative load the cloud keeps serving and
+    /// `isLoaded` never flips.
     case failed = 2
+    /// The host called `cancel`.
+    case cancelled = 3
 
     @usableFromInline init(fromC c: Int32) {
         self = XybridDownloadState(rawValue: c)!
@@ -934,6 +1159,228 @@ public enum XybridThermalState: Int32, Hashable, Sendable, CaseIterable {
 
     @usableFromInline var cValue: Int32 {
         rawValue
+    }
+}
+
+/// How voice-activity detection (VAD) chunking is resolved for a session.
+///
+/// There is deliberately no "on, with the default model" variant: nothing
+/// ships a bundled Silero model, and the core handles VAD-enabled-without-a-
+/// directory by warning and silently falling back to fixed-window chunking.
+/// Enabling VAD therefore requires naming a directory.
+public enum XybridVadMode: Hashable, Equatable, Sendable {
+    /// Fixed time-window chunking; no voice-activity detection.
+    case off
+    /// VAD on, using the Silero model in this directory, which must contain a
+    /// `model.onnx`.
+    case enabled(modelDir: String)
+
+    @inlinable static func decode(from reader: inout WireReader) -> XybridVadMode {
+        let tag = reader.readU32()
+        switch tag {
+        case 0:
+            return .off
+        case 1:
+            return .enabled(modelDir: reader.readString())
+        default:
+            fatalError("Invalid XybridVadMode tag: \(tag)")
+        }
+    }
+
+    @inlinable func encode(to writer: inout WireWriter) {
+        switch self {
+        case .off:
+            writer.writeU32(0)
+        case let .enabled(modelDir):
+            writer.writeU32(1)
+            writer.writeString(modelDir)
+        }
+    }
+}
+
+public final class XybridDownload {
+    @usableFromInline let handle: UInt64
+
+    @usableFromInline init(handle: UInt64) {
+        self.handle = handle
+    }
+
+    deinit {
+        boltffi_release_class_xybrid_bolt_xybrid_download(handle)
+    }
+
+    /// Start downloading a registry model. Returns immediately.
+    public init(fromRegistry id: String) {
+        let boltffiIdBytes = boltffiEncode { boltffiIdWriter in boltffiIdWriter.writeString(id) }
+        let boltffiHandle = boltffiIdBytes.withUnsafeBufferPointer { boltffiIdBuffer in
+            return boltffi_init_class_xybrid_bolt_xybrid_download_from_registry(boltffiIdBuffer.baseAddress!, UInt(boltffiIdBuffer.count))
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Start downloading a registry model resolved for a specific platform.
+    public init(fromRegistryWithPlatform id: String, platform: String) {
+        let boltffiIdBytes = boltffiEncode { boltffiIdWriter in boltffiIdWriter.writeString(id) }
+        let boltffiHandle = boltffiIdBytes.withUnsafeBufferPointer { boltffiIdBuffer in
+            let boltffiPlatformBytes = boltffiEncode { boltffiPlatformWriter in boltffiPlatformWriter.writeString(platform) }
+            return boltffiPlatformBytes.withUnsafeBufferPointer { boltffiPlatformBuffer in
+                return boltffi_init_class_xybrid_bolt_xybrid_download_from_registry_with_platform(
+                    boltffiIdBuffer.baseAddress!,
+                    UInt(boltffiIdBuffer.count),
+                    boltffiPlatformBuffer.baseAddress!,
+                    UInt(boltffiPlatformBuffer.count)
+                )
+            }
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Current snapshot. Never blocks — safe from a UI thread or a per-frame
+    /// render loop.
+    public func status() -> XybridDownloadStatus {
+        let boltffiResult = boltffi_method_class_xybrid_bolt_xybrid_download_status(self.handle)
+        defer { boltffi_free_buf(boltffiResult) }
+        return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in XybridDownloadStatus.decode(from: &boltffiReader) }
+    }
+
+    /// Whether the download reached a terminal state.
+    public func isFinished() -> Bool {
+        return boltffi_method_class_xybrid_bolt_xybrid_download_is_finished(self.handle)
+    }
+
+    /// The failure message once the download ended in `Failed` or
+    /// `Cancelled`; null otherwise. The stream carries the terminal *state*,
+    /// this carries the reason.
+    public func error() -> String? {
+        let boltffiResult = boltffi_method_class_xybrid_bolt_xybrid_download_error(self.handle)
+        defer { boltffi_free_buf(boltffiResult) }
+        return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readOptional { boltffiReader in boltffiReader.readString() } }
+    }
+
+    /// Ask the download to stop. Takes effect within one chunk read, discards
+    /// the partial file, and moves the status to `Cancelled`. Idempotent, and
+    /// a no-op once the download is terminal.
+    public func cancel() {
+        boltffi_method_class_xybrid_bolt_xybrid_download_cancel(self.handle)
+    }
+}
+
+public final class XybridStreamingSession {
+    @usableFromInline let handle: UInt64
+
+    @usableFromInline init(handle: UInt64) {
+        self.handle = handle
+    }
+
+    deinit {
+        boltffi_release_class_xybrid_bolt_xybrid_streaming_session(handle)
+    }
+
+    /// Open a session on an already-loaded ASR model.
+    ///
+    /// Starts a worker thread and warms the weights, so the first spoken
+    /// words do not pay the cold-start cost. Returns an error for a model
+    /// that does not support streaming, or a sample rate other than 16000.
+    public init(forModel model: XybridModel, config: XybridStreamingConfig) throws {
+        let boltffiConfigBytes = boltffiEncode { boltffiConfigWriter in config.encode(to: &boltffiConfigWriter) }
+        let boltffiHandle = try boltffiConfigBytes.withUnsafeBufferPointer { boltffiConfigBuffer in
+            var boltffiResult: UInt64 = UInt64()
+            let boltffiError = boltffi_init_class_xybrid_bolt_xybrid_streaming_session_for_model(
+                model.handle,
+                boltffiConfigBuffer.baseAddress!,
+                UInt(boltffiConfigBuffer.count),
+                &boltffiResult
+            )
+            if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                defer { boltffi_free_buf(boltffiError) }
+                throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+            }
+            return boltffiResult
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Feed PCM f32 mono 16 kHz samples.
+    ///
+    /// Hands the buffer to the worker and returns; transcription happens
+    /// there, never on the caller's thread. Blocks only when the queue is
+    /// full, which back-pressures a producer feeding faster than the model
+    /// can keep up.
+    public func feed(samples: [Float]) throws {
+        try samples.withUnsafeBufferPointer { boltffiSamplesBuffer in
+            let boltffiError = boltffi_method_class_xybrid_bolt_xybrid_streaming_session_feed(self.handle, boltffiSamplesBuffer.baseAddress, UInt(boltffiSamplesBuffer.count))
+            if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                defer { boltffi_free_buf(boltffiError) }
+                throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+            }
+        }
+    }
+
+    /// Finalize: drain buffered audio and return the complete transcript.
+    ///
+    /// The session is over afterwards — `feed` fails and the partial stream
+    /// closes. Blocks until the last chunk is transcribed, so call it off the
+    /// UI thread.
+    public func flush() throws -> String {
+        var boltffiResult: FfiBuf_u8 = FfiBuf_u8()
+        let boltffiError = boltffi_method_class_xybrid_bolt_xybrid_streaming_session_flush(self.handle, &boltffiResult)
+        if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+            defer { boltffi_free_buf(boltffiError) }
+            throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+        }
+        defer { boltffi_free_buf(boltffiResult) }
+        return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readString() }
+    }
+
+    /// Reset to transcribe fresh audio without reloading the model.
+    public func reset() throws {
+        let boltffiError = boltffi_method_class_xybrid_bolt_xybrid_streaming_session_reset(self.handle)
+        if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+            defer { boltffi_free_buf(boltffiError) }
+            throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+        }
+    }
+
+    /// Stop the session and release the model, discarding buffered audio.
+    ///
+    /// Idempotent. Use [`Self::flush`] when you want the transcript — this is
+    /// the "user walked away" path. Named `cancel` rather than `close`
+    /// because BoltFFI already gives every handle a generated `close()` for
+    /// the host's disposal idiom.
+    public func cancel() {
+        boltffi_method_class_xybrid_bolt_xybrid_streaming_session_cancel(self.handle)
+    }
+
+    /// Whether the session is still accepting audio.
+    public func isRunning() -> Bool {
+        return boltffi_method_class_xybrid_bolt_xybrid_streaming_session_is_running(self.handle)
+    }
+}
+
+public final class XybridCancellationToken {
+    @usableFromInline let handle: UInt64
+
+    @usableFromInline init(handle: UInt64) {
+        self.handle = handle
+    }
+
+    deinit {
+        boltffi_release_class_xybrid_bolt_xybrid_cancellation_token(handle)
+    }
+
+    /// Create a fresh, un-cancelled token.
+    public init() {
+        self.handle = boltffi_init_class_xybrid_bolt_xybrid_cancellation_token_new()
+    }
+
+    /// Request cancellation. Idempotent, and safe to call from any thread.
+    public func cancel() {
+        boltffi_method_class_xybrid_bolt_xybrid_cancellation_token_cancel(self.handle)
+    }
+
+    /// Whether [`Self::cancel`] has been called on this token.
+    public func isCancelled() -> Bool {
+        return boltffi_method_class_xybrid_bolt_xybrid_cancellation_token_is_cancelled(self.handle)
     }
 }
 
@@ -1175,7 +1622,9 @@ public final class XybridModel {
     ///
     /// The hand-written wrappers add a one-arg `run(envelope)` convenience that
     /// forwards `None`, so simple call sites stay ergonomic.
-    public func run(envelope: XybridEnvelope, options: XybridRunOptions?) throws -> XybridResult {
+    /// Pass a [`XybridCancellationToken`] to keep a stop button on the run;
+    /// `None` means the run cannot be cancelled.
+    public func run(envelope: XybridEnvelope, options: XybridRunOptions?, cancel: XybridCancellationToken) throws -> XybridResult {
         let boltffiEnvelopeBytes = boltffiEncode { boltffiEnvelopeWriter in envelope.encode(to: &boltffiEnvelopeWriter) }
         return try boltffiEnvelopeBytes.withUnsafeBufferPointer { boltffiEnvelopeBuffer in
             let boltffiOptionsBytes = boltffiEncode { boltffiOptionsWriter in boltffiOptionsWriter.writeOptional(options) { boltffiOptionsWriter, boltffiValue0 in boltffiValue0.encode(to: &boltffiOptionsWriter) } }
@@ -1187,6 +1636,7 @@ public final class XybridModel {
                     UInt(boltffiEnvelopeBuffer.count),
                     boltffiOptionsBuffer.baseAddress!,
                     UInt(boltffiOptionsBuffer.count),
+                    cancel.handle,
                     &boltffiResult
                 )
                 if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
@@ -1203,7 +1653,9 @@ public final class XybridModel {
     ///
     /// The identifier remains valid until the final result is taken, an error
     /// is returned, or [`Self::stream_close`] is called.
-    public func runStream(envelope: XybridEnvelope, options: XybridRunOptions?) throws -> UInt64 {
+    /// Pass a [`XybridCancellationToken`] to keep a stop button on the run;
+    /// `None` means the run cannot be cancelled.
+    public func runStream(envelope: XybridEnvelope, options: XybridRunOptions?, cancel: XybridCancellationToken) throws -> UInt64 {
         let boltffiEnvelopeBytes = boltffiEncode { boltffiEnvelopeWriter in envelope.encode(to: &boltffiEnvelopeWriter) }
         return try boltffiEnvelopeBytes.withUnsafeBufferPointer { boltffiEnvelopeBuffer in
             let boltffiOptionsBytes = boltffiEncode { boltffiOptionsWriter in boltffiOptionsWriter.writeOptional(options) { boltffiOptionsWriter, boltffiValue0 in boltffiValue0.encode(to: &boltffiOptionsWriter) } }
@@ -1215,6 +1667,7 @@ public final class XybridModel {
                     UInt(boltffiEnvelopeBuffer.count),
                     boltffiOptionsBuffer.baseAddress!,
                     UInt(boltffiOptionsBuffer.count),
+                    cancel.handle,
                     &boltffiResult
                 )
                 if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
@@ -1260,7 +1713,17 @@ public final class XybridModel {
     /// Only the generation config from `options` is applied — abort signals and
     /// cloud fallback are not wired on the context path (matches the facade's
     /// `run_with_context`).
-    public func runWithContext(envelope: XybridEnvelope, context: XybridConversationContext, options: XybridRunOptions?) throws -> XybridResult {
+    /// Pass a [`XybridCancellationToken`] to keep a stop button on the run;
+    /// `None` means the run cannot be cancelled.
+    ///
+    /// Routes through the facade's options path, so abort signals and cloud
+    /// fallback on `options` are honoured rather than dropped.
+    public func runWithContext(
+        envelope: XybridEnvelope,
+        context: XybridConversationContext,
+        options: XybridRunOptions?,
+        cancel: XybridCancellationToken
+    ) throws -> XybridResult {
         let boltffiEnvelopeBytes = boltffiEncode { boltffiEnvelopeWriter in envelope.encode(to: &boltffiEnvelopeWriter) }
         return try boltffiEnvelopeBytes.withUnsafeBufferPointer { boltffiEnvelopeBuffer in
             let boltffiOptionsBytes = boltffiEncode { boltffiOptionsWriter in boltffiOptionsWriter.writeOptional(options) { boltffiOptionsWriter, boltffiValue0 in boltffiValue0.encode(to: &boltffiOptionsWriter) } }
@@ -1273,6 +1736,7 @@ public final class XybridModel {
                     context.handle,
                     boltffiOptionsBuffer.baseAddress!,
                     UInt(boltffiOptionsBuffer.count),
+                    cancel.handle,
                     &boltffiResult
                 )
                 if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
@@ -1288,7 +1752,14 @@ public final class XybridModel {
     /// Start context-aware token streaming; returns a model-scoped session id.
     /// The pull protocol is identical to [`Self::run_stream`]
     /// (`stream_next` / `stream_result` / `stream_close`).
-    public func runStreamWithContext(envelope: XybridEnvelope, context: XybridConversationContext, options: XybridRunOptions?) throws -> UInt64 {
+    /// Pass a [`XybridCancellationToken`] to keep a stop button on the run;
+    /// `None` means the run cannot be cancelled.
+    public func runStreamWithContext(
+        envelope: XybridEnvelope,
+        context: XybridConversationContext,
+        options: XybridRunOptions?,
+        cancel: XybridCancellationToken
+    ) throws -> UInt64 {
         let boltffiEnvelopeBytes = boltffiEncode { boltffiEnvelopeWriter in envelope.encode(to: &boltffiEnvelopeWriter) }
         return try boltffiEnvelopeBytes.withUnsafeBufferPointer { boltffiEnvelopeBuffer in
             let boltffiOptionsBytes = boltffiEncode { boltffiOptionsWriter in boltffiOptionsWriter.writeOptional(options) { boltffiOptionsWriter, boltffiValue0 in boltffiValue0.encode(to: &boltffiOptionsWriter) } }
@@ -1301,6 +1772,7 @@ public final class XybridModel {
                     context.handle,
                     boltffiOptionsBuffer.baseAddress!,
                     UInt(boltffiOptionsBuffer.count),
+                    cancel.handle,
                     &boltffiResult
                 )
                 if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
@@ -1326,6 +1798,112 @@ public final class XybridModel {
             defer { boltffi_free_buf(boltffiError) }
             throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
         }
+    }
+}
+
+public final class XybridPipeline {
+    @usableFromInline let handle: UInt64
+
+    @usableFromInline init(handle: UInt64) {
+        self.handle = handle
+    }
+
+    deinit {
+        boltffi_release_class_xybrid_bolt_xybrid_pipeline(handle)
+    }
+
+    /// Parse and load a pipeline from YAML content.
+    public init(fromYaml yaml: String) throws {
+        let boltffiYamlBytes = boltffiEncode { boltffiYamlWriter in boltffiYamlWriter.writeString(yaml) }
+        let boltffiHandle = try boltffiYamlBytes.withUnsafeBufferPointer { boltffiYamlBuffer in
+            var boltffiResult: UInt64 = UInt64()
+            let boltffiError = boltffi_init_class_xybrid_bolt_xybrid_pipeline_from_yaml(boltffiYamlBuffer.baseAddress!, UInt(boltffiYamlBuffer.count), &boltffiResult)
+            if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                defer { boltffi_free_buf(boltffiError) }
+                throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+            }
+            return boltffiResult
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Read, parse, and load a pipeline from a YAML file.
+    public init(fromFile path: String) throws {
+        let boltffiPathBytes = boltffiEncode { boltffiPathWriter in boltffiPathWriter.writeString(path) }
+        let boltffiHandle = try boltffiPathBytes.withUnsafeBufferPointer { boltffiPathBuffer in
+            var boltffiResult: UInt64 = UInt64()
+            let boltffiError = boltffi_init_class_xybrid_bolt_xybrid_pipeline_from_file(boltffiPathBuffer.baseAddress!, UInt(boltffiPathBuffer.count), &boltffiResult)
+            if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                defer { boltffi_free_buf(boltffiError) }
+                throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+            }
+            return boltffiResult
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Load a pipeline bundle.
+    public init(fromBundle path: String) throws {
+        let boltffiPathBytes = boltffiEncode { boltffiPathWriter in boltffiPathWriter.writeString(path) }
+        let boltffiHandle = try boltffiPathBytes.withUnsafeBufferPointer { boltffiPathBuffer in
+            var boltffiResult: UInt64 = UInt64()
+            let boltffiError = boltffi_init_class_xybrid_bolt_xybrid_pipeline_from_bundle(boltffiPathBuffer.baseAddress!, UInt(boltffiPathBuffer.count), &boltffiResult)
+            if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                defer { boltffi_free_buf(boltffiError) }
+                throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+            }
+            return boltffiResult
+        }
+        self.handle = boltffiHandle
+    }
+
+    /// Execute every stage, downloading any missing models first, and return
+    /// each stage's output alongside the final one.
+    ///
+    /// Of `options`, only `correlation_id` applies to a pipeline run. Setting
+    /// `generation_config` or `abort_on` fails with `ConfigError` rather than
+    /// being ignored; per-stage generation settings belong in the YAML.
+    public func run(envelope: XybridEnvelope, options: XybridRunOptions?) throws -> XybridPipelineResult {
+        let boltffiEnvelopeBytes = boltffiEncode { boltffiEnvelopeWriter in envelope.encode(to: &boltffiEnvelopeWriter) }
+        return try boltffiEnvelopeBytes.withUnsafeBufferPointer { boltffiEnvelopeBuffer in
+            let boltffiOptionsBytes = boltffiEncode { boltffiOptionsWriter in boltffiOptionsWriter.writeOptional(options) { boltffiOptionsWriter, boltffiValue0 in boltffiValue0.encode(to: &boltffiOptionsWriter) } }
+            return try boltffiOptionsBytes.withUnsafeBufferPointer { boltffiOptionsBuffer in
+                var boltffiResult: FfiBuf_u8 = FfiBuf_u8()
+                let boltffiError = boltffi_method_class_xybrid_bolt_xybrid_pipeline_run(
+                    self.handle,
+                    boltffiEnvelopeBuffer.baseAddress!,
+                    UInt(boltffiEnvelopeBuffer.count),
+                    boltffiOptionsBuffer.baseAddress!,
+                    UInt(boltffiOptionsBuffer.count),
+                    &boltffiResult
+                )
+                if boltffiError.ptr != nil || Int(boltffiError.len) != 0 {
+                    defer { boltffi_free_buf(boltffiError) }
+                    throw boltffiDecodeOwnedBuf(boltffiError.ptr, Int(boltffiError.len)) { boltffiErrorReader in XybridError.decode(from: &boltffiErrorReader) }
+                }
+                defer { boltffi_free_buf(boltffiResult) }
+                return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in XybridPipelineResult.decode(from: &boltffiReader) }
+            }
+        }
+    }
+
+    /// Pipeline name from the YAML definition, if present.
+    public func name() -> String? {
+        let boltffiResult = boltffi_method_class_xybrid_bolt_xybrid_pipeline_name(self.handle)
+        defer { boltffi_free_buf(boltffiResult) }
+        return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readOptional { boltffiReader in boltffiReader.readString() } }
+    }
+
+    /// Stage identifiers in execution order.
+    public func stageNames() -> [String] {
+        let boltffiResult = boltffi_method_class_xybrid_bolt_xybrid_pipeline_stage_names(self.handle)
+        defer { boltffi_free_buf(boltffiResult) }
+        return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readArray { boltffiReader in boltffiReader.readString() } }
+    }
+
+    /// Number of stages in the pipeline.
+    public func stageCount() -> UInt32 {
+        return boltffi_method_class_xybrid_bolt_xybrid_pipeline_stage_count(self.handle)
     }
 }
 
@@ -1783,7 +2361,7 @@ public func cacheListExtractedModelIds() throws -> [String] {
     return boltffiDecodeOwnedBuf(boltffiResult.ptr, Int(boltffiResult.len)) { boltffiReader in boltffiReader.readArray { boltffiReader in boltffiReader.readString() } }
 }
 
-/// Removes expired cache entries and returns how many were deleted.
+/// Reports a configuration error until persistent cache retention is supported.
 public func cacheCleanExpired() throws -> UInt32 {
     var boltffiResult: UInt32 = UInt32()
     let boltffiError = boltffi_function_xybrid_bolt_cache_clean_expired(&boltffiResult)
@@ -1938,6 +2516,304 @@ public func telemetryFlush() {
 /// Shut down the telemetry exporter. Idempotent.
 public func telemetryShutdown() {
     boltffi_function_xybrid_bolt_telemetry_shutdown()
+}
+
+
+extension XybridDownload {
+    /// Pushed progress updates, closing once the download is terminal.
+    ///
+    /// Generated as an `AsyncStream` in Swift, a `Flow` in Kotlin, an
+    /// `IAsyncEnumerable` in C# and a subscription object in Python.
+    /// Cancelling the consuming task / scope / token unsubscribes; it does
+    /// **not** cancel the download itself — call [`Self::cancel`] for that.
+    ///
+    /// The current snapshot is delivered first, so subscribing late still
+    /// yields a frame, and a download that already finished closes at once
+    /// instead of hanging.
+    public func progress() -> _Concurrency.AsyncStream<XybridDownloadStatus> {
+        _Concurrency.AsyncStream<XybridDownloadStatus>(bufferingPolicy: .unbounded) { continuation in
+            let boltffiSubscription = boltffi_stream_xybrid_bolt_xybrid_download_progress_subscribe(self.handle)
+            guard boltffiSubscription != 0 else {
+                continuation.finish()
+                return
+            }
+            let context = BoltFFIStreamContext<XybridDownloadStatus>(
+                subscription: boltffiSubscription,
+                batchSize: 16,
+                readBatch: { subscription, batchSize in
+                    return boltffiReadWireStreamBatch(
+                        subscription: subscription,
+                        batchSize: batchSize,
+                        popBatch: boltffi_stream_xybrid_bolt_xybrid_download_progress_pop_batch,
+                        freeBuf: boltffi_free_buf
+                    ) { reader in
+                        let boltffiStreamCount = Int(reader.readU32())
+                        var boltffiStreamBatch = [XybridDownloadStatus]()
+                        boltffiStreamBatch.reserveCapacity(boltffiStreamCount)
+                        for _ in 0..<boltffiStreamCount {
+                            boltffiStreamBatch.append(XybridDownloadStatus.decode(from: &reader))
+                        }
+                        return boltffiStreamBatch
+                    }
+                },
+                poll: boltffi_stream_xybrid_bolt_xybrid_download_progress_poll,
+                unsubscribe: boltffi_stream_xybrid_bolt_xybrid_download_progress_unsubscribe,
+                free: boltffi_stream_xybrid_bolt_xybrid_download_progress_free,
+                atomicCompareExchange: boltffi_atomic_u8_cas,
+                yieldItem: { item in _ = continuation.yield(item) },
+                finish: { continuation.finish() }
+            )
+            continuation.onTermination = { @Sendable _ in context.requestTermination() }
+            context.start()
+        }
+    }
+}
+
+
+extension XybridStreamingSession {
+    /// Pushed partial transcripts, closing once the session ends.
+    ///
+    /// Generated as an `AsyncStream` in Swift, a `Flow` in Kotlin, an
+    /// `IAsyncEnumerable` in C# and an iterable subscription in Python.
+    ///
+    /// A partial produced before subscribing is delivered immediately, so
+    /// audio fed before the stream is attached is never silently lost, and
+    /// subscribing to a finished session closes at once instead of hanging.
+    public func partials() -> _Concurrency.AsyncStream<XybridPartialResult> {
+        _Concurrency.AsyncStream<XybridPartialResult>(bufferingPolicy: .unbounded) { continuation in
+            let boltffiSubscription = boltffi_stream_xybrid_bolt_xybrid_streaming_session_partials_subscribe(self.handle)
+            guard boltffiSubscription != 0 else {
+                continuation.finish()
+                return
+            }
+            let context = BoltFFIStreamContext<XybridPartialResult>(
+                subscription: boltffiSubscription,
+                batchSize: 16,
+                readBatch: { subscription, batchSize in
+                    return boltffiReadWireStreamBatch(
+                        subscription: subscription,
+                        batchSize: batchSize,
+                        popBatch: boltffi_stream_xybrid_bolt_xybrid_streaming_session_partials_pop_batch,
+                        freeBuf: boltffi_free_buf
+                    ) { reader in
+                        let boltffiStreamCount = Int(reader.readU32())
+                        var boltffiStreamBatch = [XybridPartialResult]()
+                        boltffiStreamBatch.reserveCapacity(boltffiStreamCount)
+                        for _ in 0..<boltffiStreamCount {
+                            boltffiStreamBatch.append(XybridPartialResult.decode(from: &reader))
+                        }
+                        return boltffiStreamBatch
+                    }
+                },
+                poll: boltffi_stream_xybrid_bolt_xybrid_streaming_session_partials_poll,
+                unsubscribe: boltffi_stream_xybrid_bolt_xybrid_streaming_session_partials_unsubscribe,
+                free: boltffi_stream_xybrid_bolt_xybrid_streaming_session_partials_free,
+                atomicCompareExchange: boltffi_atomic_u8_cas,
+                yieldItem: { item in _ = continuation.yield(item) },
+                finish: { continuation.finish() }
+            )
+            continuation.onTermination = { @Sendable _ in context.requestTermination() }
+            context.start()
+        }
+    }
+}
+
+
+extension XybridModel {
+    /// Pushed download updates for a speculatively-loaded model — the stream
+    /// counterpart of [`Self::await_download`], and what issue #504 asks for.
+    ///
+    /// Emits the current snapshot first, then every update, then closes on
+    /// the terminal state. An ordinary local model is already `Ready`, so its
+    /// stream yields one frame and ends.
+    public func downloadProgress() -> _Concurrency.AsyncStream<XybridDownloadStatus> {
+        _Concurrency.AsyncStream<XybridDownloadStatus>(bufferingPolicy: .unbounded) { continuation in
+            let boltffiSubscription = boltffi_stream_xybrid_bolt_xybrid_model_download_progress_subscribe(self.handle)
+            guard boltffiSubscription != 0 else {
+                continuation.finish()
+                return
+            }
+            let context = BoltFFIStreamContext<XybridDownloadStatus>(
+                subscription: boltffiSubscription,
+                batchSize: 16,
+                readBatch: { subscription, batchSize in
+                    return boltffiReadWireStreamBatch(
+                        subscription: subscription,
+                        batchSize: batchSize,
+                        popBatch: boltffi_stream_xybrid_bolt_xybrid_model_download_progress_pop_batch,
+                        freeBuf: boltffi_free_buf
+                    ) { reader in
+                        let boltffiStreamCount = Int(reader.readU32())
+                        var boltffiStreamBatch = [XybridDownloadStatus]()
+                        boltffiStreamBatch.reserveCapacity(boltffiStreamCount)
+                        for _ in 0..<boltffiStreamCount {
+                            boltffiStreamBatch.append(XybridDownloadStatus.decode(from: &reader))
+                        }
+                        return boltffiStreamBatch
+                    }
+                },
+                poll: boltffi_stream_xybrid_bolt_xybrid_model_download_progress_poll,
+                unsubscribe: boltffi_stream_xybrid_bolt_xybrid_model_download_progress_unsubscribe,
+                free: boltffi_stream_xybrid_bolt_xybrid_model_download_progress_free,
+                atomicCompareExchange: boltffi_atomic_u8_cas,
+                yieldItem: { item in _ = continuation.yield(item) },
+                finish: { continuation.finish() }
+            )
+            continuation.onTermination = { @Sendable _ in context.requestTermination() }
+            context.start()
+        }
+    }
+}
+
+private enum BoltFFIStreamPollResult: Int8 {
+    case ready = 0
+    case closed = 1
+}
+
+@inline(__always)
+private func boltffiReadDirectStreamBatch<Element, Item>(
+    subscription: UInt64,
+    batchSize: UInt,
+    popBatch: (UInt64, UnsafeMutablePointer<Element>?, UInt) -> UInt,
+    mapItems: (UnsafeBufferPointer<Element>) -> [Item]
+) -> [Item] {
+    if batchSize == 0 {
+        return []
+    }
+    let items = UnsafeMutablePointer<Element>.allocate(capacity: Int(batchSize))
+    defer { items.deallocate() }
+    let count = popBatch(subscription, items, batchSize)
+    if count == 0 {
+        return []
+    }
+    return mapItems(UnsafeBufferPointer(start: items, count: Int(count)))
+}
+
+private class BoltFFIStreamPollContext: @unchecked Sendable {
+    func handlePoll(_ result: Int8) {
+        preconditionFailure("invalid BoltFFI stream poll context")
+    }
+}
+
+private let boltffiStreamPollCallback: @convention(c) (UInt64, Int8) -> Void = { data, result in
+    Unmanaged<BoltFFIStreamPollContext>.fromOpaque(UnsafeRawPointer(bitPattern: UInt(data))!).takeRetainedValue().handlePoll(result)
+}
+
+private final class BoltFFIStreamContext<Item>: BoltFFIStreamPollContext, @unchecked Sendable {
+    private let subscription: UInt64
+    private let batchSize: UInt
+    private let readBatch: (UInt64, UInt) -> [Item]
+    private let poll: (UInt64, UInt64, StreamContinuationCallback?) -> Void
+    private let unsubscribe: (UInt64) -> Void
+    private let free: (UInt64) -> Void
+    private let atomicCompareExchange: (UnsafeMutablePointer<UInt8>?, UInt8, UInt8) -> Bool
+    private let yieldItem: (Item) -> Void
+    private let finish: () -> Void
+    private var lifecycle = UInt8(0)
+    private var processing = UInt8(0)
+
+    init(
+        subscription: UInt64,
+        batchSize: UInt,
+        readBatch: @escaping (UInt64, UInt) -> [Item],
+        poll: @escaping (UInt64, UInt64, StreamContinuationCallback?) -> Void,
+        unsubscribe: @escaping (UInt64) -> Void,
+        free: @escaping (UInt64) -> Void,
+        atomicCompareExchange: @escaping (UnsafeMutablePointer<UInt8>?, UInt8, UInt8) -> Bool,
+        yieldItem: @escaping (Item) -> Void,
+        finish: @escaping () -> Void
+    ) {
+        self.subscription = subscription
+        self.batchSize = batchSize
+        self.readBatch = readBatch
+        self.poll = poll
+        self.unsubscribe = unsubscribe
+        self.free = free
+        self.atomicCompareExchange = atomicCompareExchange
+        self.yieldItem = yieldItem
+        self.finish = finish
+    }
+
+    func start() {
+        registerPoll()
+    }
+
+    func requestTermination() {
+        let started = withUnsafeMutablePointer(to: &lifecycle) {
+            atomicCompareExchange($0, 0, 1)
+        }
+        if started {
+            unsubscribe(subscription)
+            _ = withUnsafeMutablePointer(to: &lifecycle) {
+                atomicCompareExchange($0, 1, 2)
+            }
+        }
+        finalizeIfIdle()
+    }
+
+    private func registerPoll() {
+        guard withUnsafeMutablePointer(to: &lifecycle, { atomicCompareExchange($0, 0, 0) }) else {
+            finalizeIfIdle()
+            return
+        }
+        let data = UInt64(UInt(bitPattern: Unmanaged.passRetained(self).toOpaque()))
+        poll(subscription, data, boltffiStreamPollCallback)
+    }
+
+    override func handlePoll(_ result: Int8) {
+        guard withUnsafeMutablePointer(to: &processing, { atomicCompareExchange($0, 0, 1) }) else {
+            finalizeIfIdle()
+            return
+        }
+        let reschedule = processPoll(result)
+        _ = withUnsafeMutablePointer(to: &processing) { atomicCompareExchange($0, 1, 0) }
+        finalizeIfIdle()
+        if reschedule {
+            schedulePoll()
+        }
+    }
+
+    private func processPoll(_ result: Int8) -> Bool {
+        guard withUnsafeMutablePointer(to: &lifecycle, { atomicCompareExchange($0, 0, 0) }) else {
+            return false
+        }
+        drain()
+        if result == BoltFFIStreamPollResult.closed.rawValue {
+            requestTermination()
+            return false
+        }
+        return withUnsafeMutablePointer(to: &lifecycle) { atomicCompareExchange($0, 0, 0) }
+    }
+
+    private func drain() {
+        while true {
+            let items = readBatch(subscription, batchSize)
+            if items.isEmpty {
+                return
+            }
+            for item in items {
+                yieldItem(item)
+            }
+        }
+    }
+
+    private func schedulePoll() {
+        _Concurrency.Task { [self] in
+            await _Concurrency.Task.yield()
+            registerPoll()
+        }
+    }
+
+    private func finalizeIfIdle() {
+        guard withUnsafeMutablePointer(to: &processing, { atomicCompareExchange($0, 0, 0) }) else {
+            return
+        }
+        guard withUnsafeMutablePointer(to: &lifecycle, { atomicCompareExchange($0, 2, 3) }) else {
+            return
+        }
+        free(subscription)
+        finish()
+    }
 }
 
 @usableFromInline struct WireReader {
@@ -2312,5 +3188,22 @@ func boltffiEncodeUnexpectedCallbackError(_ error: Error) -> [UInt8] {
     writer.writeU8(boltffiUnexpectedCallbackErrorVersion)
     writer.writeString(String(describing: error))
     return [UInt8](writer.finalize())
+}
+
+@inline(__always)
+private func boltffiReadWireStreamBatch<Item>(
+    subscription: UInt64,
+    batchSize: UInt,
+    popBatch: (UInt64, UInt) -> FfiBuf_u8,
+    freeBuf: (FfiBuf_u8) -> Void,
+    decodeItems: (inout WireReader) -> [Item]
+) -> [Item] {
+    let buffer = popBatch(subscription, batchSize)
+    defer { freeBuf(buffer) }
+    guard buffer.len > 0, let pointer = buffer.ptr else {
+        return []
+    }
+    var reader = WireReader(ptr: pointer, len: Int(buffer.len))
+    return decodeItems(&reader)
 }
 

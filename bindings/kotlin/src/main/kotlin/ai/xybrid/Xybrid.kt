@@ -20,6 +20,9 @@ import android.os.Build
 import android.os.PowerManager
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -126,6 +129,83 @@ object Xybrid {
      */
     @JvmStatic
     fun model(source: ModelSource): ModelLoader = XybridModelLoader.from(source)
+
+    /**
+     * Release every idle loaded model's memory; returns how many were released.
+     *
+     * Wire this to the platform's low-memory signal:
+     *
+     * ```kotlin
+     * override fun onTrimMemory(level: Int) {
+     *     super.onTrimMemory(level)
+     *     Xybrid.releaseMemory()
+     * }
+     * ```
+     *
+     * Models with a run in flight are skipped, and a released model reloads
+     * itself the next time it is used — there is no new error to handle and
+     * nothing to reload by hand.
+     *
+     * The generated binding returns `UInt`; this returns `Int` so the
+     * `@JvmStatic` name is not mangled for Java callers. A released-model
+     * count cannot realistically exceed `Int.MAX_VALUE`.
+     */
+    @JvmStatic
+    fun releaseMemory(): Int = ai.xybrid.releaseMemory().toInt()
+
+    /**
+     * Enable or disable automatic model release for subsequent loads.
+     *
+     * When enabled, loading a model while the device reports memory pressure
+     * first releases least-recently-used idle models. Off by default;
+     * [releaseMemory] works either way.
+     */
+    @JvmStatic
+    fun setAutoRelease(enabled: Boolean) = ai.xybrid.setAutoRelease(enabled)
+
+    /** Whether automatic model release is enabled process-wide. */
+    @JvmStatic
+    val isAutoReleaseEnabled: Boolean get() = ai.xybrid.isAutoReleaseEnabled()
+
+    /**
+     * Set the process-wide default for speculative cloud serving.
+     *
+     * Speculation answers from the cloud gateway while a registry model's
+     * weights download in the background, instead of blocking on the download.
+     *
+     * This is the *default* for loads that do not opt in per-load;
+     * [XybridModelLoader.fromRegistrySpeculative] opts in explicitly and is
+     * unaffected by this toggle. Off by default. Either way, speculation also
+     * needs a resolvable API key and a model that is not already cached —
+     * [XybridModelLoader.willSpeculate] reports the combined answer for a
+     * specific loader.
+     */
+    @JvmStatic
+    fun setSpeculativeCloud(enabled: Boolean) = ai.xybrid.setSpeculativeCloud(enabled)
+
+    /** Whether the global speculative-cloud default is on. */
+    @JvmStatic
+    val isSpeculativeCloudEnabled: Boolean get() = ai.xybrid.isSpeculativeCloudEnabled()
+
+    /**
+     * Whether a Xybrid gateway API key is resolvable, from either [init] or
+     * the environment.
+     *
+     * Inference runs on-device without one; this reports whether the optional
+     * platform features (cloud routing, telemetry) can engage.
+     */
+    @JvmStatic
+    val hasApiKey: Boolean get() = ai.xybrid.hasApiKey()
+
+    /**
+     * Set the API key for a specific cloud provider.
+     *
+     * Separate from [init]'s `apiKey`, which sets the Xybrid platform key. Use
+     * this when routing to a provider the gateway forwards to.
+     */
+    @JvmStatic
+    fun setProviderApiKey(provider: String, apiKey: String) =
+        ai.xybrid.setProviderApiKey(provider, apiKey)
 
     /** Aggregate storage usage across all managed model-cache areas. */
     @JvmStatic
@@ -291,6 +371,35 @@ class XybridModelLoader private constructor(
     }
 
     /**
+     * Start downloading this model's weights in the background, without
+     * loading them.
+     *
+     * This is how you get a progress bar: [load] blocks, so there is no object
+     * to poll while it runs — this is that object. The download fills the SDK
+     * cache, so the [load] afterwards returns immediately.
+     *
+     * ```kotlin
+     * val loader = Xybrid.model("qwen3-0.6b")
+     * val download = loader.download()!!
+     * download.progress().collect { status ->
+     *     bar.progress = (status.progress * 100).toInt()
+     *     label.text = "${status.downloadedBytes} / ${status.totalBytes ?: 0}"
+     * }
+     * val model = loader.load()
+     * ```
+     *
+     * Returns `null` for a source with nothing to fetch — a local bundle,
+     * directory, or Hugging Face repo — where [load] is the whole story.
+     * Cancelling the collecting scope unsubscribes from updates; call
+     * [XybridDownload.cancel] to stop the transfer itself.
+     */
+    fun download(): XybridDownload? = when (val current = source) {
+        is ModelSource.Registry -> XybridDownload(current.id)
+        is ModelSource.RegistrySpeculative -> XybridDownload(current.id)
+        is ModelSource.Bundle, is ModelSource.Directory, is ModelSource.HuggingFace -> null
+    }
+
+    /**
      * Whether [load] would actually speculate: speculation is possible for this
      * source, an API key resolves, and the model is not already cached.
      *
@@ -353,6 +462,79 @@ typealias ModelLoader = XybridModelLoader
 /** A loaded model ready for inference. */
 typealias Model = XybridModel
 
+/** A loaded multi-stage inference pipeline. */
+typealias Pipeline = XybridPipeline
+
+/**
+ * Open a live ASR session: feed microphone PCM in, read partial transcripts
+ * out.
+ *
+ * This is the live-capture surface. [XybridModel.run] transcribes a finished
+ * buffer; this transcribes speech as it arrives, which is what dictation and
+ * live captioning need.
+ *
+ * Audio must be PCM **float, mono, 16 kHz** — converting from the recorder's
+ * format is the caller's job.
+ *
+ * ```kotlin
+ * val session = model.stream()
+ * scope.launch {
+ *     session.partials().collect { partial -> textView.text = partial.text }
+ * }
+ * // from the audio callback:
+ * session.feed(pcm)
+ * // when the user stops talking:
+ * val transcript = session.flush()
+ * ```
+ *
+ * @param config chunking options; defaults to fixed-window chunking at
+ *   16 kHz. Use [streamingConfigWithVad] to chunk on speech boundaries.
+ * @throws XybridError.StreamingNotSupported if this is not an ASR model, or
+ *   [XybridError.ConfigError] for a sample rate other than 16 kHz.
+ */
+fun XybridModel.stream(
+    config: XybridStreamingConfig = defaultStreamingConfig(),
+): XybridStreamingSession = XybridStreamingSession(this, config)
+
+/**
+ * Fixed time-window chunking at the required 16 kHz, using the model's own
+ * language. The starting point for dictation.
+ */
+fun defaultStreamingConfig(): XybridStreamingConfig = XybridStreamingConfig(
+    sampleRate = 16_000u,
+    vad = XybridVadMode.Off,
+    vadThreshold = 0.5f,
+    language = null,
+    audioCtx = null,
+)
+
+/**
+ * Chunk on speech boundaries using voice-activity detection, rather than on a
+ * fixed clock.
+ *
+ * Better transcripts for natural speech — a window cut mid-word is what makes
+ * fixed chunking stutter — at the cost of loading a small VAD model alongside
+ * the ASR one.
+ *
+ * @param modelDir directory holding a Silero VAD model, containing a
+ *   `model.onnx`. Required: no VAD model ships with the SDK, and the engine
+ *   falls back to fixed windows without one.
+ * @param language language hint such as `"en"`; null uses the model default.
+ * @param threshold VAD sensitivity, 0.0–1.0. Lower catches quieter speech,
+ *   and more background noise with it.
+ */
+fun streamingConfigWithVad(
+    modelDir: String,
+    language: String? = null,
+    threshold: Float = 0.5f,
+): XybridStreamingConfig = XybridStreamingConfig(
+    sampleRate = 16_000u,
+    vad = XybridVadMode.Enabled(modelDir),
+    vadThreshold = threshold,
+    language = language,
+    audioCtx = null,
+)
+
 /**
  * Run inference with the model's default options.
  *
@@ -362,6 +544,123 @@ typealias Model = XybridModel
  * generation config, abort signals, or cloud-fallback behaviour.
  */
 fun XybridModel.run(envelope: XybridEnvelope): XybridResult = this.run(envelope, null)
+
+/**
+ * Run inference that cannot be cancelled.
+ *
+ * The generated [XybridModel.run] takes the stop button as a *required*
+ * argument — BoltFFI cannot express an optional handle parameter — so this
+ * overload manufactures a token that is never signalled. Use [runAsync], or the
+ * three-argument generated form, when you want to stop a run.
+ */
+fun XybridModel.run(
+    envelope: XybridEnvelope,
+    options: XybridRunOptions?,
+): XybridResult = XybridCancellationToken().use { this.run(envelope, options, it) }
+
+/** Context-aware run that cannot be cancelled. See [run]. */
+fun XybridModel.runWithContext(
+    envelope: XybridEnvelope,
+    context: XybridConversationContext,
+    options: XybridRunOptions?,
+): XybridResult = XybridCancellationToken().use {
+    this.runWithContext(envelope, context, options, it)
+}
+
+/**
+ * Start a context-aware pull stream that cannot be cancelled. See [run].
+ *
+ * Prefer [streamTokens], which wires collector cancellation to the native stop
+ * button.
+ */
+fun XybridModel.runStreamWithContext(
+    envelope: XybridEnvelope,
+    context: XybridConversationContext,
+    options: XybridRunOptions?,
+): ULong = XybridCancellationToken().use {
+    this.runStreamWithContext(envelope, context, options, it)
+}
+
+/**
+ * Start a pull-based stream that cannot be cancelled. See [run].
+ *
+ * Prefer [streamTokens], which wires collector cancellation to the native stop
+ * button; this exists for callers driving `streamNext` / `streamClose`
+ * themselves. The token is released as soon as this returns, so the stream runs
+ * to completion or until `streamClose`.
+ */
+fun XybridModel.runStream(
+    envelope: XybridEnvelope,
+    options: XybridRunOptions?,
+): ULong = XybridCancellationToken().use { this.runStream(envelope, options, it) }
+
+// -- Pipelines --
+//
+// A pipeline run returns every stage's output, not only the last one, so a
+// voice assistant can show what it heard and what it answered while it plays
+// the audio:
+//
+//     val result = pipeline.runAsync(Envelope.audio(pcm))
+//     transcript.text = result.stage("asr")?.text
+//     reply.text = result.stage("llm")?.text
+//     player.play(result.audioBytes)
+
+/** Parse and load a pipeline off the caller's thread. */
+suspend fun XybridPipeline.Companion.fromYamlAsync(yaml: String): XybridPipeline =
+    withContext(Dispatchers.IO) { fromYaml(yaml) }
+
+/** Read, parse, and load a pipeline file off the caller's thread. */
+suspend fun XybridPipeline.Companion.fromFileAsync(path: String): XybridPipeline =
+    withContext(Dispatchers.IO) { fromFile(path) }
+
+/** Load a pipeline bundle off the caller's thread. */
+suspend fun XybridPipeline.Companion.fromBundleAsync(path: String): XybridPipeline =
+    withContext(Dispatchers.IO) { fromBundle(path) }
+
+/**
+ * Run every stage with default options.
+ *
+ * Convenience over the generated `run(envelope, options)`. The first run
+ * downloads any model the pipeline still needs, so prefer [runAsync] on the
+ * main thread.
+ */
+fun XybridPipeline.run(envelope: XybridEnvelope): XybridPipelineResult = this.run(envelope, null)
+
+/**
+ * Run every pipeline stage off the caller's thread.
+ *
+ * Of [options], only `correlationId` applies to a pipeline run; setting
+ * `generationConfig` or `abortOn` throws [XybridError.ConfigError].
+ */
+suspend fun XybridPipeline.runAsync(
+    envelope: XybridEnvelope,
+    options: XybridRunOptions? = null,
+): XybridPipelineResult = withContext(Dispatchers.IO) { this@runAsync.run(envelope, options) }
+
+/** The stage with this identifier — the YAML `id:` — if it ran. */
+fun XybridPipelineResult.stage(id: String): XybridStageResult? = stages.firstOrNull { it.stageId == id }
+
+/** Final text payload, if the last stage produced text. `null` otherwise. */
+val XybridPipelineResult.text: String?
+    get() = (envelope.kind as? XybridEnvelopeKind.Text)?.text
+
+/** Final audio bytes, if the last stage produced audio. `null` otherwise. */
+val XybridPipelineResult.audioBytes: ByteArray?
+    get() = (envelope.kind as? XybridEnvelopeKind.Audio)?.bytes
+
+/** The whole run's latency in seconds as a Double. */
+val XybridPipelineResult.latencySeconds: Double get() = latencyMs.toDouble() / 1000.0
+
+/** This stage's text output — an ASR transcript, an LLM reply. `null` otherwise. */
+val XybridStageResult.text: String?
+    get() = (envelope.kind as? XybridEnvelopeKind.Text)?.text
+
+/** This stage's audio output, if it produced audio. `null` otherwise. */
+val XybridStageResult.audioBytes: ByteArray?
+    get() = (envelope.kind as? XybridEnvelopeKind.Audio)?.bytes
+
+/** This stage's latency in seconds as a Double. */
+val XybridStageResult.latencySeconds: Double get() = latencyMs.toDouble() / 1000.0
 
 // -- Async (suspend) conveniences --
 //
@@ -407,11 +706,48 @@ suspend fun XybridModel.Companion.fromBundleAsync(path: String): XybridModel =
 suspend fun XybridModel.Companion.fromHuggingfaceAsync(repo: String): XybridModel =
     Xybrid.model(ModelSource.huggingFace(repo)).load()
 
-/** Run inference off the caller's thread (on [Dispatchers.IO]). */
+/**
+ * Run inference off the caller's thread (on [Dispatchers.IO]).
+ *
+ * Cancelling the calling coroutine signals the native stop button. `withContext`
+ * alone cannot do that — the run is a blocking native call, so cancellation has
+ * to be forwarded, which is what the `await()` catch below does.
+ *
+ * Cancellation is checked at token boundaries **while streaming**. A batch run
+ * is only cancellable before generation starts: once the backend is producing,
+ * there is no token-aware batch path to stop it, so the call finishes normally.
+ * Use [streamTokens] when a mid-flight stop button matters.
+ */
 suspend fun XybridModel.runAsync(
     envelope: XybridEnvelope,
     options: XybridRunOptions? = null,
-): XybridResult = withContext(Dispatchers.IO) { this@runAsync.run(envelope, options) }
+): XybridResult {
+    val cancel = XybridCancellationToken()
+    try {
+        return coroutineScope {
+            val work = async(Dispatchers.IO) { this@runAsync.run(envelope, options, cancel) }
+            try {
+                work.await()
+            } catch (e: CancellationException) {
+                // `await()` is cancellable, so this runs the moment the caller
+                // cancels. A Job completion handler would not: the job cannot
+                // complete until the non-cooperative native call returns, by
+                // which point there is nothing left to stop.
+                cancel.cancel()
+                throw e
+            }
+        }
+    } finally {
+        // `coroutineScope` joins its children before unwinding — including on
+        // cancellation — so the worker is provably done with the handle here.
+        // Closing from the worker's completion handler instead would race the
+        // `cancel()` above: a run that finished in that window would close the
+        // token first, and signalling a closed handle throws
+        // IllegalStateException, replacing the CancellationException the
+        // caller expects.
+        cancel.close()
+    }
+}
 
 /** Warm up the model off the caller's thread (on [Dispatchers.IO]). */
 suspend fun XybridModel.warmupAsync() = withContext(Dispatchers.IO) { this@warmupAsync.warmup() }
@@ -438,22 +774,29 @@ fun XybridModel.streamTokens(
     envelope: XybridEnvelope,
     options: XybridRunOptions? = null,
 ): Flow<XybridStreamToken> = flow {
-    val streamId = runStream(envelope, options)
-    try {
-        while (true) {
-            // Cooperative cancellation: collecting coroutine cancelled -> throws
-            // here at the next token boundary, the finally closes the session.
-            currentCoroutineContext().ensureActive()
-            val event = streamNext(streamId)
-            when (event.kind) {
-                XybridStreamEventKind.TOKEN -> event.token?.let { emit(it) }
-                XybridStreamEventKind.COMPLETE -> break
+    XybridCancellationToken().use { cancel ->
+        val streamId = runStream(envelope, options, cancel)
+        try {
+            while (true) {
+                // Cooperative cancellation: collecting coroutine cancelled -> throws
+                // here at the next token boundary, the finally closes the session.
+                currentCoroutineContext().ensureActive()
+                val event = streamNext(streamId)
+                when (event.kind) {
+                    XybridStreamEventKind.TOKEN -> event.token?.let { emit(it) }
+                    XybridStreamEventKind.COMPLETE -> break
+                }
             }
+        } finally {
+            // Reached promptly: `ensureActive()` throws at the next token
+            // boundary when the collector is cancelled. Signalling before
+            // `streamClose` stops generation rather than only tearing down
+            // the session.
+            cancel.cancel()
+            // Idempotent (the session may already be gone after an error), and
+            // aborts an in-flight run when collection stops early.
+            streamClose(streamId)
         }
-    } finally {
-        // Idempotent (the session may already be gone after an error), and
-        // aborts an in-flight run when collection stops early.
-        streamClose(streamId)
     }
 }.flowOn(Dispatchers.IO)
 
@@ -727,4 +1070,5 @@ val XybridError.displayMessage: String
         is XybridError.UnsupportedModelCapability -> message
         is XybridError.UnsupportedBackendCapability -> message
         is XybridError.InvalidImage -> message
+        is XybridError.Cancelled -> message
     }

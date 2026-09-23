@@ -58,8 +58,8 @@ Usage:
     python3 tools/scripts/gen_unity_bolt_csharp.py            # regenerate + write
     python3 tools/scripts/gen_unity_bolt_csharp.py --check    # fail on drift
 
-Requires the pinned `boltffi` CLI (0.25.3) on PATH:
-    cargo install boltffi_cli --version 0.25.3 --locked
+Requires the pinned `boltffi` CLI (see PINNED_BOLTFFI below) on PATH:
+    cargo install boltffi_cli --version 0.30.1 --locked
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ RAW_DIR = BOLT_DIR / "dist" / "csharp"
 DEST_DIR = REPO_ROOT / "bindings" / "unity" / "Runtime" / "Bolt"
 # Path used to key deterministic GUIDs and to build the folder .meta location.
 DEST_REL = "bindings/unity/Runtime/Bolt"
-PINNED_BOLTFFI = "0.29.3"
+PINNED_BOLTFFI = "0.30.1"
 
 
 # --- Transform (a): readonly record struct (C# 10) -> plain readonly struct ---
@@ -92,11 +92,13 @@ RECORD_STRUCT_RE = re.compile(
 # 11 on boltffi 0.29, which emits the whole inference path the 0.25.3 C#
 # lowering dropped (XybridResult / XybridEnvelope / XybridStreamEvent / …),
 # plus 3 for the tool-calling records (XybridToolDefinition / XybridToolCall /
-# XybridToolResult).
+# XybridToolResult), plus 2 for the live ASR session (XybridStreamingConfig /
+# XybridPartialResult), plus 2 for the pipeline result (XybridPipelineResult /
+# XybridStageResult), plus 2 for model cache management (XybridCacheEntry /
+# XybridCacheStatus).
 # Bump this deliberately: the count is a tripwire for unreviewed boltffi output
 # drift, not a value to auto-sync.
-# Fourteen existing wire records plus XybridCacheEntry and XybridCacheStatus.
-EXPECTED_RECORD_STRUCTS = 16
+EXPECTED_RECORD_STRUCTS = 20
 
 
 # --- Transform (g): Unsafe.SizeOf<T>() -> Marshal.SizeOf<T>(). boltffi's wire
@@ -394,7 +396,7 @@ def generate() -> dict[str, str]:
     # dist artifact cannot leak into the committed Unity package.
     if RAW_DIR.exists():
         shutil.rmtree(RAW_DIR)
-    subprocess.run(["boltffi", "generate", "csharp"], cwd=BOLT_DIR, check=True)
+    subprocess.run(["boltffi", "generate", "csharp", "--deny-skipped"], cwd=BOLT_DIR, check=True)
 
     sources = sorted(RAW_DIR.glob("*.cs"))
     if not sources:

@@ -27,19 +27,15 @@
 //!
 //! - **ASR streaming.** [`xybrid_sdk::stream::XybridStream`] is wrapped
 //!   separately in the same follow-up.
-//! - **Pipelines.** `xybrid-sdk` already exports POD-friendly
-//!   [`FfiPipelineExecutionResult`] / [`FfiStageExecutionResult`]; the
-//!   binding crates can re-export those directly. A dedicated facade for
-//!   pipelines is a separate concern.
 //!
 //! [`xybrid-bolt`]: https://docs.rs/xybrid-bolt
 //! [`xybrid-ffi`]: https://docs.rs/xybrid-ffi
-//! [`FfiPipelineExecutionResult`]: xybrid_sdk::FfiPipelineExecutionResult
-//! [`FfiStageExecutionResult`]: xybrid_sdk::FfiStageExecutionResult
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use xybrid_sdk as sdk;
 
@@ -123,6 +119,10 @@ pub enum Error {
     InvalidImage {
         message: String,
     },
+    /// The caller stopped the operation — today, a cancelled model download.
+    Cancelled {
+        message: String,
+    },
 }
 
 impl Error {
@@ -154,6 +154,7 @@ impl Error {
             Error::UnsupportedModelCapability { .. } => 20,
             Error::UnsupportedBackendCapability { .. } => 21,
             Error::InvalidImage { .. } => 22,
+            Error::Cancelled { .. } => 23,
         }
     }
 
@@ -207,6 +208,7 @@ impl std::fmt::Display for Error {
                 write!(f, "Unsupported backend capability: {message}")
             }
             Error::InvalidImage { message } => write!(f, "Invalid image input: {message}"),
+            Error::Cancelled { message } => write!(f, "Cancelled: {message}"),
         }
     }
 }
@@ -266,6 +268,7 @@ impl From<sdk::SdkError> for Error {
                 Error::RateLimited { retry_after_secs }
             }
             sdk::SdkError::Timeout { timeout_ms } => Error::Timeout { timeout_ms },
+            sdk::SdkError::Cancelled { message } => Error::Cancelled { message },
             // Capability / artifact errors (vision-era). First-class typed
             // variants so foreign consumers can branch on them; the structured
             // SDK fields are flattened into the diagnostic message.
@@ -1027,6 +1030,16 @@ impl RunOptions {
             policy = policy.stop_on(sig.to_sdk());
         }
 
+        // Supplying a handle IS the opt-in. `AbortState::detect_user_cancelled`
+        // only honours a cancelled token when the policy observes
+        // `UserCancelled`, and the FFI `AbortSignal` wire enum deliberately
+        // omits that variant — it is not a device-pressure signal a host polls,
+        // it is implied by handing over a stop button. Without this the token
+        // latches `is_cancelled()` and inference ignores it.
+        if cancel.is_some() {
+            policy = policy.stop_on(sdk::AbortSignal::UserCancelled);
+        }
+
         let mut opts = sdk::RunOptions::new().with_abort_policy(policy);
         if let Some(gc) = &self.generation_config {
             opts = opts.with_generation_config(gc.apply_over(generation_base)?);
@@ -1086,6 +1099,17 @@ impl OutputType {
             sdk::OutputType::Audio => OutputType::Audio,
             sdk::OutputType::Embedding => OutputType::Embedding,
             sdk::OutputType::Unknown => OutputType::Unknown,
+        }
+    }
+
+    /// The output type an envelope's payload reports as, mirroring the SDK's
+    /// classification of a model result.
+    fn of_envelope(kind: &EnvelopeKind) -> Self {
+        match kind {
+            EnvelopeKind::Text { .. } => OutputType::Text,
+            EnvelopeKind::Audio { .. } => OutputType::Audio,
+            EnvelopeKind::Embedding { .. } => OutputType::Embedding,
+            EnvelopeKind::Image { .. } | EnvelopeKind::MultiPart { .. } => OutputType::Unknown,
         }
     }
 }
@@ -1173,20 +1197,31 @@ impl ExecutionTarget {
     }
 }
 
-/// Lifecycle of the background download behind a speculative load.
+/// Lifecycle of a model download — either a standalone [`ModelDownload`] or
+/// the background download behind a speculative load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DownloadState {
     Downloading,
     Ready,
     Failed,
+    /// The host called `cancel`.
+    Cancelled,
 }
 
-/// One consistent read of download progress + state.
+/// One consistent read of download progress, bytes and state.
+///
+/// `progress` is aggregated across every artifact the model needs, never
+/// moves backwards, and reaches 1.0 only alongside [`DownloadState::Ready`].
+/// `total_bytes` is `None` when the source declares no size.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DownloadStatus {
     pub state: DownloadState,
     /// 0.0..=1.0.
     pub progress: f32,
+    /// Bytes written so far, across every artifact.
+    pub downloaded_bytes: u64,
+    /// Declared total across every artifact, or `None` when unknown.
+    pub total_bytes: Option<u64>,
 }
 
 impl DownloadStatus {
@@ -1195,10 +1230,13 @@ impl DownloadStatus {
             sdk::DownloadState::Downloading => DownloadState::Downloading,
             sdk::DownloadState::Ready => DownloadState::Ready,
             sdk::DownloadState::Failed => DownloadState::Failed,
+            sdk::DownloadState::Cancelled => DownloadState::Cancelled,
         };
         Self {
             state,
             progress: status.progress,
+            downloaded_bytes: status.downloaded_bytes,
+            total_bytes: status.total_bytes,
         }
     }
 }
@@ -1364,6 +1402,203 @@ impl InferenceResult {
             _ => None,
         }
     }
+}
+
+impl ExecutionTarget {
+    /// Map a pipeline stage's routing target to coarse provenance.
+    ///
+    /// The orchestrator records `local`, `cloud` or `fallback:<id>` (a
+    /// xybrid-hosted server). `device` is accepted as a local spelling too.
+    /// Anything else is reported as cloud, so a spelling added later can never
+    /// claim that remote work ran on-device.
+    fn from_pipeline_target(target: &str) -> Self {
+        match target {
+            "local" | "device" => Self::Local,
+            _ => Self::Cloud,
+        }
+    }
+}
+
+// ============================================================================
+// Pipeline handle
+// ============================================================================
+
+/// What one stage of a pipeline run produced.
+#[derive(Debug, Clone)]
+pub struct StageResult {
+    /// Stage identifier from the pipeline YAML (`id:`), or the model ID when
+    /// the stage declares none. Matches [`Pipeline::stage_names`].
+    pub stage_id: String,
+    /// This stage's output, which is also the next stage's input — the
+    /// transcript of an ASR stage, the reply of an LLM stage.
+    pub envelope: Envelope,
+    pub output_type: OutputType,
+    pub latency_ms: u32,
+    /// Where this stage ran. Stages of one pipeline can run in different
+    /// places.
+    pub execution_target: ExecutionTarget,
+    /// Generation figures (TTFT, tokens per second) when this stage is a
+    /// language model; `total_ms` is the stage latency and
+    /// `stage_latencies_ms` is empty.
+    pub metrics: InferenceMetrics,
+}
+
+impl StageResult {
+    fn from_sdk(stage: sdk::PipelineStageTiming) -> Self {
+        let metrics =
+            sdk::InferenceMetrics::from_metadata(&stage.output.metadata, stage.latency_ms);
+        let envelope = Envelope::from_sdk(stage.output);
+        Self {
+            execution_target: ExecutionTarget::from_pipeline_target(&stage.target),
+            output_type: OutputType::of_envelope(&envelope.kind),
+            envelope,
+            stage_id: stage.name,
+            latency_ms: stage.latency_ms,
+            metrics: InferenceMetrics::from_sdk(&metrics),
+        }
+    }
+
+    /// Convenience: text payload, if this stage produced text.
+    pub fn text(&self) -> Option<&str> {
+        match &self.envelope.kind {
+            EnvelopeKind::Text { text } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+}
+
+/// Result of a pipeline run: the final output plus every stage's own output.
+#[derive(Debug, Clone)]
+pub struct PipelineResult {
+    /// The final stage's output — the same envelope as the last entry of
+    /// [`stages`](Self::stages).
+    pub envelope: Envelope,
+    pub output_type: OutputType,
+    /// Wall-clock time of the whole run.
+    pub latency_ms: u32,
+    /// Every executed stage, in order.
+    pub stages: Vec<StageResult>,
+}
+
+impl PipelineResult {
+    fn from_sdk(result: sdk::PipelineExecutionResult) -> Self {
+        Self {
+            envelope: Envelope::from_sdk(result.output),
+            output_type: OutputType::from_sdk(result.output_type),
+            latency_ms: result.total_latency_ms,
+            stages: result
+                .stages
+                .into_iter()
+                .map(StageResult::from_sdk)
+                .collect(),
+        }
+    }
+
+    /// The stage with this identifier, if it ran.
+    pub fn stage(&self, stage_id: &str) -> Option<&StageResult> {
+        self.stages.iter().find(|stage| stage.stage_id == stage_id)
+    }
+
+    /// Convenience: final text payload, if the last stage produced text.
+    pub fn text(&self) -> Option<&str> {
+        match &self.envelope.kind {
+            EnvelopeKind::Text { text } => Some(text.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Convenience: final audio bytes, if the last stage produced audio.
+    pub fn audio_bytes(&self) -> Option<&[u8]> {
+        match &self.envelope.kind {
+            EnvelopeKind::Audio { bytes } => Some(bytes.as_slice()),
+            _ => None,
+        }
+    }
+}
+
+/// FFI-friendly handle around a loaded multi-stage pipeline.
+///
+/// Construction intentionally collapses the SDK's `PipelineRef -> Pipeline`
+/// sequence into one fallible operation. Foreign callers receive one opaque
+/// handle with constructors, introspection, and execution methods.
+pub struct Pipeline {
+    inner: sdk::Pipeline,
+}
+
+impl Pipeline {
+    /// Parse and load a pipeline from YAML content.
+    pub fn from_yaml(yaml: String) -> Result<Arc<Self>> {
+        let pipeline = sdk::PipelineRef::from_yaml(&yaml)?.load()?;
+        Ok(Arc::new(Self { inner: pipeline }))
+    }
+
+    /// Read, parse, and load a pipeline from a YAML file.
+    pub fn from_file(path: String) -> Result<Arc<Self>> {
+        let pipeline = sdk::PipelineRef::from_file(path)?.load()?;
+        Ok(Arc::new(Self { inner: pipeline }))
+    }
+
+    /// Load a pipeline bundle.
+    ///
+    /// Pipeline bundles are YAML files today. Keeping a distinct constructor
+    /// preserves the foreign API when richer bundle formats are introduced.
+    pub fn from_bundle(path: String) -> Result<Arc<Self>> {
+        Self::from_file(path)
+    }
+
+    /// Execute every stage, downloading any missing models first.
+    ///
+    /// Of [`RunOptions`], only `correlation_id` applies to a pipeline run: it
+    /// is copied onto the run's telemetry.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::ConfigError`] when `options` sets `generation_config` or
+    /// `abort_on` — a pipeline run cannot honour either, and ignoring them
+    /// would look like success. Per-stage generation settings belong in the
+    /// pipeline YAML. Otherwise any load or stage failure.
+    pub fn run(&self, envelope: Envelope, options: RunOptions) -> Result<PipelineResult> {
+        let sdk_options = pipeline_run_options(options)?;
+        let envelope = envelope.into_sdk()?;
+        let result = self.inner.run_with_options(&envelope, &sdk_options)?;
+        Ok(PipelineResult::from_sdk(result))
+    }
+
+    /// Pipeline name from the YAML definition, if present.
+    pub fn name(&self) -> Option<String> {
+        self.inner.name().map(str::to_string)
+    }
+
+    /// Stage identifiers in execution order.
+    pub fn stage_names(&self) -> Vec<String> {
+        self.inner.stage_names()
+    }
+
+    /// Number of stages in the pipeline.
+    pub fn stage_count(&self) -> u32 {
+        u32::try_from(self.inner.stage_count()).unwrap_or(u32::MAX)
+    }
+}
+
+/// Keep the [`RunOptions`] fields a pipeline run honours; reject the rest.
+fn pipeline_run_options(options: RunOptions) -> Result<sdk::RunOptions> {
+    if options.generation_config.is_some() {
+        return Err(Error::ConfigError {
+            message: "generation_config is not supported on pipeline runs; set per-stage \
+                      options in the pipeline YAML"
+                .into(),
+        });
+    }
+    if !options.abort_on.is_empty() {
+        return Err(Error::ConfigError {
+            message: "abort_on is not supported on pipeline runs".into(),
+        });
+    }
+    let mut sdk_options = sdk::RunOptions::new();
+    if let Some(correlation_id) = options.correlation_id {
+        sdk_options = sdk_options.with_correlation_id(correlation_id);
+    }
+    Ok(sdk_options)
 }
 
 // ============================================================================
@@ -1595,6 +1830,94 @@ impl ModelLoader {
         let model = self.inner.load_async().await.map_err(Error::from)?;
         Ok(Arc::new(XybridModel { inner: model }))
     }
+
+    /// Start the download in the background and return a handle to watch.
+    ///
+    /// This is what gives a blocking host a progress bar: `load` has no
+    /// object to poll while it runs, this does. The download fills the normal
+    /// SDK cache, so the later `load` hits it and returns at once. Returns
+    /// immediately; a source with nothing to fetch comes back `Ready`.
+    pub fn start_download(&self) -> Arc<ModelDownload> {
+        Arc::new(ModelDownload {
+            inner: self.inner.start_download(),
+        })
+    }
+}
+
+/// FFI-friendly handle over a background model download.
+///
+/// Three ways to read it, all fed by the same aggregated source:
+/// [`Self::status`] for a snapshot, [`Self::next_status`] to block until it
+/// changes, and [`Self::watch`] for pushed updates. `watch` takes a Rust
+/// closure that never crosses the FFI boundary — binding crates use it to
+/// feed their own transport (a BoltFFI stream, a flutter_rust_bridge sink).
+pub struct ModelDownload {
+    inner: Arc<sdk::ModelDownload>,
+}
+
+impl ModelDownload {
+    /// Start downloading a registry model without loading it.
+    pub fn from_registry(id: String) -> Arc<Self> {
+        Arc::new(Self {
+            inner: sdk::ModelLoader::from_registry(&id).start_download(),
+        })
+    }
+
+    /// Registry download forced to a specific platform string.
+    pub fn from_registry_with_platform(id: String, platform: String) -> Arc<Self> {
+        Arc::new(Self {
+            inner: sdk::ModelLoader::from_registry_with_platform(&id, &platform).start_download(),
+        })
+    }
+
+    /// Current snapshot. Never blocks — safe from a UI thread or a render loop.
+    pub fn status(&self) -> DownloadStatus {
+        DownloadStatus::from_sdk(self.inner.status())
+    }
+
+    /// Whether the download reached a terminal state.
+    pub fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
+    /// The failure message once the download ended in `Failed` or `Cancelled`.
+    pub fn error(&self) -> Option<String> {
+        self.inner.error()
+    }
+
+    /// Block until the status changes, `timeout_ms` elapses, or the download
+    /// finishes, then report the snapshot.
+    ///
+    /// Terminal states return immediately, so a host loop driven by this
+    /// cannot hang. Call it off the UI thread. A `timeout_ms` of 0 makes it a
+    /// non-blocking read, identical to [`Self::status`].
+    pub fn next_status(&self, timeout_ms: u64) -> DownloadStatus {
+        DownloadStatus::from_sdk(
+            self.inner
+                .next_status_snapshot(Duration::from_millis(timeout_ms)),
+        )
+    }
+
+    /// Block until the download reaches a terminal state or `timeout_ms`
+    /// elapses.
+    pub fn wait(&self, timeout_ms: u64) -> DownloadStatus {
+        DownloadStatus::from_sdk(self.inner.wait(Duration::from_millis(timeout_ms)))
+    }
+
+    /// Ask the download to stop. Idempotent; a no-op once terminal.
+    pub fn cancel(&self) {
+        self.inner.cancel();
+    }
+
+    /// Register a Rust-side observer for pushed updates. The current snapshot
+    /// arrives synchronously, so a late subscriber still gets a first frame.
+    pub fn watch<F>(&self, observer: F)
+    where
+        F: Fn(DownloadStatus) + Send + Sync + 'static,
+    {
+        self.inner
+            .watch(move |status| observer(DownloadStatus::from_sdk(status)));
+    }
 }
 
 /// FFI-friendly handle around a loaded [`sdk::XybridModel`].
@@ -1652,6 +1975,21 @@ impl XybridModel {
     /// [`Self::download_status`].
     pub fn await_download(&self, timeout_ms: u64) -> DownloadStatus {
         DownloadStatus::from_sdk(self.inner.await_download(timeout_ms))
+    }
+
+    /// Register a Rust-side observer for pushed download updates on a
+    /// speculatively-loaded model — the push counterpart of
+    /// [`Self::await_download`].
+    ///
+    /// The current snapshot arrives synchronously and the observer is dropped
+    /// once the download is terminal. The closure never crosses the FFI
+    /// boundary; binding crates forward it into their own transport.
+    pub fn watch_download<F>(&self, observer: F)
+    where
+        F: Fn(DownloadStatus) + Send + Sync + 'static,
+    {
+        self.inner
+            .watch_download(move |status| observer(DownloadStatus::from_sdk(status)));
     }
 
     pub fn supports_streaming(&self) -> bool {
@@ -1750,6 +2088,32 @@ impl XybridModel {
         let result = self
             .inner
             .run_with_context(&env, &ctx, gc.as_ref())
+            .map_err(Error::from)?;
+        Ok(InferenceResult::from_sdk(result))
+    }
+
+    /// Run inference with conversation history, explicit [`RunOptions`] and an
+    /// optional cancellation handle.
+    ///
+    /// The options counterpart of [`Self::run_with_context`], mirroring
+    /// [`Self::run_with_options`]. Prefer this when the caller has anything
+    /// beyond a generation config to say — the plain `run_with_context` reads
+    /// only the generation config, so abort signals and cloud fallback would
+    /// otherwise be silently dropped.
+    pub fn run_with_context_options(
+        &self,
+        envelope: Envelope,
+        context: Arc<ConversationContextHandle>,
+        options: RunOptions,
+        cancel: Option<Arc<CancellationToken>>,
+    ) -> Result<InferenceResult> {
+        let env = envelope.into_sdk()?;
+        let ctx = context.snapshot();
+        let opts =
+            options.to_sdk_over(cancel.as_deref(), self.inner.default_generation_config())?;
+        let result = self
+            .inner
+            .run_with_context_options(&env, &ctx, &opts)
             .map_err(Error::from)?;
         Ok(InferenceResult::from_sdk(result))
     }
@@ -1869,6 +2233,488 @@ impl XybridModel {
     pub fn unload(&self) -> Result<()> {
         self.inner.unload().map_err(Error::from)
     }
+
+    /// Open a live ASR session on this model: feed microphone PCM in, read
+    /// partial transcripts out.
+    ///
+    /// This is the live-capture surface, distinct from one-shot transcription
+    /// of a finished buffer (`run`). The model is already loaded, so opening a
+    /// session starts a worker and warms the weights — it does not reload.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamingNotSupported`] if the model is not an ASR model,
+    /// [`Error::ConfigError`] if the sample rate is not 16 kHz, and
+    /// [`Error::LoadError`] if the worker thread cannot be spawned.
+    pub fn stream(&self, config: StreamingConfig) -> Result<Arc<AsrSession>> {
+        let sdk_config = config.to_sdk()?;
+        let stream = self.inner.stream(sdk_config).map_err(Error::from)?;
+        AsrSession::spawn(stream)
+    }
+}
+
+// ============================================================================
+// Live ASR session
+// ============================================================================
+
+/// 16 kHz mono — the only sample rate the ASR backends accept.
+pub const REQUIRED_SAMPLE_RATE: u32 = 16_000;
+
+/// How voice-activity detection (VAD) chunking is resolved for a session.
+///
+/// One decision in one type, rather than a `bool` + `Option<String>` pair
+/// where "disabled, yet a model directory is set" is representable.
+///
+/// There is deliberately no "on, with the default model" variant: nothing
+/// ships a bundled Silero model, and the core handles VAD-enabled-without-a-
+/// directory by printing a warning and silently falling back to fixed-window
+/// chunking. A variant whose only possible meaning is "quietly did nothing"
+/// is worse than no variant, so enabling VAD requires naming a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VadMode {
+    /// Fixed time-window chunking; no voice-activity detection.
+    Off,
+    /// VAD on, using the Silero model in this directory, which must contain a
+    /// `model.onnx`.
+    Enabled { model_dir: String },
+}
+
+/// Configuration for a live ASR session.
+///
+/// The model is not named here — it comes from the loaded [`XybridModel`] the
+/// session is opened on. This only configures *how* the audio is chunked.
+#[derive(Debug, Clone)]
+pub struct StreamingConfig {
+    /// Sample rate of the audio you will feed. Must be
+    /// [`REQUIRED_SAMPLE_RATE`]; validated rather than forwarded, because the
+    /// backends are fixed at 16 kHz.
+    pub sample_rate: u32,
+    /// Voice-activity-detection mode.
+    pub vad: VadMode,
+    /// VAD sensitivity, 0.0–1.0. Ignored when `vad` is [`VadMode::Off`].
+    pub vad_threshold: f32,
+    /// Language hint (e.g. `"en"`); `None` uses the model default.
+    pub language: Option<String>,
+    /// Whisper encoder context in mel frames; `None` uses the model default.
+    pub audio_ctx: Option<u32>,
+}
+
+impl Default for StreamingConfig {
+    fn default() -> Self {
+        Self {
+            sample_rate: REQUIRED_SAMPLE_RATE,
+            vad: VadMode::Off,
+            vad_threshold: 0.5,
+            language: None,
+            audio_ctx: None,
+        }
+    }
+}
+
+impl StreamingConfig {
+    /// Validate and convert to the SDK's `StreamConfig`.
+    fn to_sdk(&self) -> Result<sdk::StreamConfig> {
+        if self.sample_rate != REQUIRED_SAMPLE_RATE {
+            return Err(Error::ConfigError {
+                message: format!(
+                    "sample_rate must be {REQUIRED_SAMPLE_RATE} Hz, got {}",
+                    self.sample_rate
+                ),
+            });
+        }
+        let (enable_vad, vad_model_dir) = match &self.vad {
+            VadMode::Off => (false, None),
+            VadMode::Enabled { model_dir } => (true, Some(model_dir.clone())),
+        };
+        Ok(sdk::StreamConfig {
+            enable_vad,
+            vad_threshold: self.vad_threshold,
+            vad_model_dir,
+            language: self.language.clone(),
+            audio_ctx: self.audio_ctx,
+        })
+    }
+}
+
+/// A partial transcript emitted while audio is streaming.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartialResult {
+    /// Best-effort transcript so far. Cumulative, not a delta.
+    pub text: String,
+    /// `true` once this span is committed and will not change.
+    pub is_stable: bool,
+    /// Monotonic chunk sequence number this result corresponds to.
+    pub chunk_sequence: u64,
+    /// Audio covered so far, in milliseconds.
+    pub audio_duration_ms: u64,
+}
+
+impl From<sdk::PartialResult> for PartialResult {
+    fn from(p: sdk::PartialResult) -> Self {
+        Self {
+            text: p.text,
+            is_stable: p.is_stable,
+            chunk_sequence: p.chunk_index,
+            audio_duration_ms: p.audio_duration_ms,
+        }
+    }
+}
+
+/// What a live ASR session reports to its observers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AsrEvent {
+    /// A rolling-window chunk produced a transcript.
+    Partial(PartialResult),
+    /// The session is over — flushed, closed, or its worker died. No further
+    /// events follow, so a binding closes its stream here.
+    Finished,
+}
+
+/// An in-process observer of a live ASR session. Never crosses an FFI
+/// boundary; bindings forward events into their own transport from inside one.
+pub(crate) type AsrObserver = Box<dyn Fn(AsrEvent) + Send + Sync>;
+
+/// Observer bookkeeping for one session.
+///
+/// Everything lives under a single mutex on purpose. The observers, the
+/// pending partial and the finished flag are read and written together, and
+/// splitting them across locks is exactly how a terminal event gets delivered
+/// to an empty list and then dropped.
+#[derive(Default)]
+struct AsrFanout {
+    observers: Vec<AsrObserver>,
+    /// Latest partial produced before any observer attached. Partial text is
+    /// cumulative, so keeping only the most recent loses nothing, and it is
+    /// delivered the instant someone subscribes.
+    pending: Option<PartialResult>,
+    finished: bool,
+}
+
+impl AsrFanout {
+    fn emit(&mut self, partial: PartialResult) {
+        if self.observers.is_empty() {
+            self.pending = Some(partial);
+            return;
+        }
+        for observer in &self.observers {
+            observer(AsrEvent::Partial(partial.clone()));
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.finished {
+            return;
+        }
+        self.finished = true;
+        for observer in &self.observers {
+            observer(AsrEvent::Finished);
+        }
+        // Nothing more will be emitted, so release the host closures rather
+        // than holding them for the session's lifetime.
+        self.observers.clear();
+    }
+
+    fn watch(&mut self, observer: AsrObserver) {
+        if let Some(partial) = self.pending.take() {
+            observer(AsrEvent::Partial(partial));
+        }
+        if self.finished {
+            observer(AsrEvent::Finished);
+            return;
+        }
+        self.observers.push(observer);
+    }
+}
+
+/// Commands applied, in order, by the session's worker thread.
+enum AsrCommand {
+    Feed(Vec<f32>),
+    Flush(SyncSender<Result<String>>),
+    Reset(SyncSender<Result<()>>),
+}
+
+/// A live ASR session: feed microphone PCM in, read partial transcripts out.
+///
+/// The session owns a worker thread that holds the SDK stream for its whole
+/// lifetime. Commands reach it over a channel, so they apply in submission
+/// order — audio fed in order is transcribed in order — and the heavy
+/// inference never runs on the caller's thread.
+///
+/// Audio is PCM **f32, mono, 16 kHz**. Converting from the platform's
+/// microphone format is the caller's job, deliberately kept out of the FFI
+/// layer.
+pub struct AsrSession {
+    commands: Mutex<Option<SyncSender<AsrCommand>>>,
+    fanout: Arc<Mutex<AsrFanout>>,
+    /// Set by [`AsrSession::cancel`]. The worker checks it before each
+    /// command, so a cancel abandons the queued backlog instead of waiting
+    /// for it to transcribe.
+    cancelled: Arc<AtomicBool>,
+    /// First per-chunk failure, if any. The core removes a chunk from its
+    /// buffer *before* transcribing it, so a failed chunk's audio is gone —
+    /// never retried, never in the transcript. Remembering it here is what
+    /// stops [`AsrSession::flush`] returning a silently holed transcript as
+    /// success.
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+impl AsrSession {
+    /// Spawn the worker that owns `stream` and start accepting commands.
+    fn spawn(stream: sdk::XybridStream) -> Result<Arc<Self>> {
+        let (sender, receiver) = mpsc::sync_channel::<AsrCommand>(ASR_COMMAND_CAPACITY);
+        let fanout = Arc::new(Mutex::new(AsrFanout::default()));
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let failure = Arc::new(Mutex::new(None));
+        let worker = AsrWorkerState {
+            fanout: Arc::clone(&fanout),
+            cancelled: Arc::clone(&cancelled),
+            failure: Arc::clone(&failure),
+        };
+        std::thread::Builder::new()
+            .name("xybrid-asr".into())
+            .spawn(move || asr_worker(stream, receiver, worker))
+            .map_err(|e| Error::LoadError {
+                message: format!("failed to spawn ASR worker thread: {e}"),
+            })?;
+        Ok(Arc::new(Self {
+            commands: Mutex::new(Some(sender)),
+            fanout,
+            cancelled,
+            failure,
+        }))
+    }
+
+    /// Subscribe to partial transcripts and the terminal event.
+    ///
+    /// A partial produced before this call is delivered immediately, so audio
+    /// fed before subscribing is never silently lost. Subscribing to an
+    /// already-finished session yields [`AsrEvent::Finished`] at once rather
+    /// than hanging.
+    ///
+    /// Rust-side only: the closure never crosses an FFI boundary.
+    pub fn watch<F>(&self, observer: F)
+    where
+        F: Fn(AsrEvent) + Send + Sync + 'static,
+    {
+        self.fanout
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .watch(Box::new(observer));
+    }
+
+    /// Feed PCM f32 mono 16 kHz samples.
+    ///
+    /// Hands the buffer to the worker and returns; inference happens there.
+    /// Blocks only if the command queue is full, which back-pressures a
+    /// producer feeding faster than the model can transcribe.
+    ///
+    /// # Errors
+    ///
+    /// If the session has been flushed or closed, so the worker is no longer
+    /// accepting audio.
+    pub fn feed(&self, samples: Vec<f32>) -> Result<()> {
+        self.send(AsrCommand::Feed(samples))
+    }
+
+    /// Finalize: drain buffered audio and return the complete transcript.
+    ///
+    /// The session is over afterwards — further [`Self::feed`] calls fail and
+    /// observers have seen [`AsrEvent::Finished`]. Blocks until the worker
+    /// finishes the last chunk, so call it off a UI thread.
+    pub fn flush(&self) -> Result<String> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.send(AsrCommand::Flush(reply))?;
+        // The worker always replies before exiting; a receive error means it
+        // died mid-flush, which is a worker-gone condition either way.
+        let transcript = answer.recv().unwrap_or_else(|_| Err(asr_worker_gone()))?;
+        match self.take_failure() {
+            Some(message) => Err(Error::InferenceError { message }),
+            None => Ok(transcript),
+        }
+    }
+
+    /// Reset to transcribe fresh audio without reloading the model.
+    pub fn reset(&self) -> Result<()> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.send(AsrCommand::Reset(reply))?;
+        answer.recv().unwrap_or_else(|_| Err(asr_worker_gone()))
+    }
+
+    /// Stop the session and release the model, discarding any buffered audio.
+    ///
+    /// Idempotent. Use [`Self::flush`] instead when you want the transcript;
+    /// this is the "user walked away" path. Named `cancel` rather than
+    /// `close` so the bolt mirror does not collide with the `close()` BoltFFI
+    /// generates on every handle for the host's disposal idiom.
+    pub fn cancel(&self) {
+        // Flag first, *then* drop the sender. Dropping alone is not enough:
+        // `Receiver::recv` yields every already-queued command before it
+        // reports disconnection, so the worker would transcribe the whole
+        // backlog — holding the model and the CPU — after the caller believed
+        // it had stopped. The worker checks this flag before each command.
+        self.cancelled.store(true, Ordering::Relaxed);
+        self.commands
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+    }
+
+    /// Whether the session is still accepting audio.
+    ///
+    /// Goes false the moment [`Self::cancel`] is called, not when the worker
+    /// notices — a stop button must read as stopped immediately.
+    pub fn is_running(&self) -> bool {
+        !self.cancelled.load(Ordering::Relaxed)
+            && !self
+                .fanout
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .finished
+    }
+
+    /// Take the recorded per-chunk failure, if one happened.
+    fn take_failure(&self) -> Option<String> {
+        self.failure
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+    }
+
+    fn send(&self, command: AsrCommand) -> Result<()> {
+        // Clone the sender out and release the lock before sending. `feed`
+        // blocks when the queue is full, and holding the lock across that
+        // would make a concurrent `cancel` — the stop button — wait for the
+        // backlog it is trying to abandon.
+        let sender = {
+            let guard = self.commands.lock().unwrap_or_else(|e| e.into_inner());
+            guard.as_ref().ok_or_else(asr_worker_gone)?.clone()
+        };
+        sender.send(command).map_err(|_| asr_worker_gone())
+    }
+}
+
+/// How many commands may queue before `feed` back-pressures the producer.
+///
+/// Microphone capture hands over ~10–100 ms of audio per call, so this is
+/// seconds of slack. An unbounded queue would instead let a fast producer
+/// grow memory without limit while the model falls behind.
+const ASR_COMMAND_CAPACITY: usize = 64;
+
+fn asr_worker_gone() -> Error {
+    Error::ConfigError {
+        message: "ASR session is no longer running; open a new session".into(),
+    }
+}
+
+/// Render an error with its full `source()` chain.
+///
+/// SDK errors carry the root cause as `#[source]`, which `Display` alone drops
+/// — "Feed failed" instead of "Feed failed: Inference error: dtype mismatch".
+fn asr_error_chain(e: &dyn std::error::Error) -> String {
+    let mut out = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        out.push_str(": ");
+        out.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    out
+}
+
+/// The shared state an ASR worker reports through.
+struct AsrWorkerState {
+    fanout: Arc<Mutex<AsrFanout>>,
+    cancelled: Arc<AtomicBool>,
+    failure: Arc<Mutex<Option<String>>>,
+}
+
+/// Owns the SDK stream and applies commands in order until the channel closes,
+/// a flush finalizes the session, or the caller cancels.
+fn asr_worker(stream: sdk::XybridStream, commands: Receiver<AsrCommand>, state: AsrWorkerState) {
+    let AsrWorkerState {
+        fanout,
+        cancelled,
+        failure,
+    } = state;
+    // Pay the model's cold-start cost while the host is still opening the
+    // microphone, instead of on top of the first visible partial. Feeds that
+    // arrive meanwhile queue on the command channel and drain against a warm
+    // model. Non-fatal: a real failure resurfaces on the first chunk.
+    if let Err(e) = stream.warmup() {
+        log::warn!(
+            "ASR warm-up failed (continuing cold): {}",
+            asr_error_chain(&e)
+        );
+    }
+
+    // The SDK returns its cached latest partial from *every* feed, and feeds
+    // queued behind one inference all drain at once when it finishes — without
+    // this, one chunk's transcript would be delivered once per queued feed.
+    let mut last_sent_sequence: Option<u64> = None;
+
+    while let Ok(command) = commands.recv() {
+        // Checked before every command, not just between feeds: a cancel has
+        // to abandon whatever is already queued, or it would sit transcribing
+        // the backlog long after the caller stopped listening.
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        match command {
+            AsrCommand::Feed(samples) => match stream.feed(&samples) {
+                Ok(Some(partial)) => {
+                    let partial = PartialResult::from(partial);
+                    if last_sent_sequence == Some(partial.chunk_sequence) {
+                        continue;
+                    }
+                    last_sent_sequence = Some(partial.chunk_sequence);
+                    fanout
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .emit(partial);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    // Keep transcribing — a transient failure should not end a
+                    // live session — but remember it. The core extracts a
+                    // chunk from its buffer before transcribing, so this
+                    // chunk's audio is already gone and will never reach the
+                    // transcript. `flush` reports this instead of handing back
+                    // a holed transcript that looks complete.
+                    let message = format!("ASR chunk failed: {}", asr_error_chain(&e));
+                    log::warn!("{message}");
+                    let mut recorded = failure.lock().unwrap_or_else(|e| e.into_inner());
+                    recorded.get_or_insert(message);
+                }
+            },
+            AsrCommand::Flush(reply) => {
+                let outcome = stream
+                    .flush()
+                    .map(|r| r.text)
+                    .map_err(|e| Error::InferenceError {
+                        message: format!("ASR flush failed: {}", asr_error_chain(&e)),
+                    });
+                let _ = reply.send(outcome);
+                break; // session finalized
+            }
+            AsrCommand::Reset(reply) => {
+                let outcome = stream.reset().map_err(|e| Error::InferenceError {
+                    message: format!("ASR reset failed: {}", asr_error_chain(&e)),
+                });
+                // A fresh utterance starts clean — including any failure
+                // recorded against the audio that is being discarded.
+                last_sent_sequence = None;
+                *failure.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let mut guard = fanout.lock().unwrap_or_else(|e| e.into_inner());
+                guard.pending = None;
+                drop(guard);
+                let _ = reply.send(outcome);
+            }
+        }
+    }
+
+    // Reached on flush, on `close`, and on the handle being dropped — every
+    // way a session can end, so observers always get their terminal event.
+    fanout.lock().unwrap_or_else(|e| e.into_inner()).finish();
 }
 
 // ============================================================================
@@ -2464,6 +3310,39 @@ impl BundleHandle {
 mod tests {
     use super::*;
 
+    fn bare_run_options() -> RunOptions {
+        RunOptions {
+            generation_config: None,
+            abort_on: Vec::new(),
+            fallback_to_cloud: false,
+            max_grace_tokens: 0,
+            correlation_id: None,
+        }
+    }
+
+    #[test]
+    fn a_cancel_handle_opts_the_policy_into_user_cancelled() {
+        // Without this the token latches `is_cancelled()` and inference
+        // ignores it: `AbortState::detect_user_cancelled` only fires when the
+        // policy observes `UserCancelled`, and the FFI `AbortSignal` wire enum
+        // has no such variant for hosts to set.
+        let token = CancellationToken::new();
+        let opts = bare_run_options()
+            .to_sdk_over(Some(&token), sdk::GenerationConfig::default())
+            .expect("options convert");
+
+        assert!(opts.abort_policy.observes(sdk::AbortSignal::UserCancelled));
+    }
+
+    #[test]
+    fn no_cancel_handle_leaves_user_cancelled_unobserved() {
+        let opts = bare_run_options()
+            .to_sdk_over(None, sdk::GenerationConfig::default())
+            .expect("options convert");
+
+        assert!(!opts.abort_policy.observes(sdk::AbortSignal::UserCancelled));
+    }
+
     #[test]
     fn cache_status_counts_physical_entries_and_distinct_models() {
         let temp = tempfile::TempDir::new().unwrap();
@@ -2578,6 +3457,150 @@ mod tests {
         }
         .is_retryable());
         assert!(!Error::NotLoaded.is_retryable());
+    }
+
+    #[test]
+    fn pipeline_construction_collapses_ref_and_exposes_stage_ids() {
+        let pipeline = Pipeline::from_yaml(
+            r#"
+name: assistant
+stages:
+  - id: answer
+    model: gpt-4o-mini
+    target: cloud
+    provider: openai
+"#
+            .into(),
+        )
+        .expect("cloud-only pipeline should resolve without model downloads");
+
+        assert_eq!(pipeline.name().as_deref(), Some("assistant"));
+        assert_eq!(pipeline.stage_names(), vec!["answer"]);
+        assert_eq!(pipeline.stage_count(), 1);
+    }
+
+    fn sdk_stage(
+        name: &str,
+        target: &str,
+        kind: sdk::ir::EnvelopeKind,
+        metadata: HashMap<String, String>,
+    ) -> sdk::PipelineStageTiming {
+        sdk::PipelineStageTiming {
+            name: name.into(),
+            latency_ms: 40,
+            target: target.into(),
+            reason: "test".into(),
+            output: sdk::ir::Envelope::with_metadata(kind, metadata),
+        }
+    }
+
+    /// A voice-assistant run: the transcript and the reply must survive next
+    /// to the final audio, each stage with its own provenance and metrics.
+    #[test]
+    fn pipeline_result_keeps_every_stage_output() {
+        let mut llm_metadata = HashMap::new();
+        llm_metadata.insert("ttft_ms".into(), "12".into());
+        let tts_audio = sdk::ir::EnvelopeKind::Audio(vec![1, 2, 3]);
+        let sdk_result = sdk::PipelineExecutionResult {
+            name: Some("assistant".into()),
+            stages: vec![
+                sdk_stage(
+                    "asr",
+                    "local",
+                    sdk::ir::EnvelopeKind::Text("what time is it".into()),
+                    HashMap::new(),
+                ),
+                sdk_stage(
+                    "llm",
+                    "cloud",
+                    sdk::ir::EnvelopeKind::Text("It is noon.".into()),
+                    llm_metadata,
+                ),
+                sdk_stage("tts", "local", tts_audio.clone(), HashMap::new()),
+            ],
+            total_latency_ms: 125,
+            output_type: sdk::OutputType::Audio,
+            output: sdk::ir::Envelope::new(tts_audio),
+        };
+
+        let result = PipelineResult::from_sdk(sdk_result);
+
+        assert_eq!(result.output_type, OutputType::Audio);
+        assert_eq!(result.audio_bytes(), Some([1u8, 2, 3].as_slice()));
+        assert_eq!(result.latency_ms, 125);
+        let ids: Vec<&str> = result.stages.iter().map(|s| s.stage_id.as_str()).collect();
+        assert_eq!(ids, ["asr", "llm", "tts"]);
+
+        let asr = result.stage("asr").expect("asr stage");
+        assert_eq!(asr.text(), Some("what time is it"));
+        assert_eq!(asr.output_type, OutputType::Text);
+        assert_eq!(asr.execution_target, ExecutionTarget::Local);
+
+        let llm = result.stage("llm").expect("llm stage");
+        assert_eq!(llm.text(), Some("It is noon."));
+        assert_eq!(llm.execution_target, ExecutionTarget::Cloud);
+        assert_eq!(llm.metrics.ttft_ms, Some(12));
+        assert_eq!(llm.metrics.total_ms, 40);
+        assert!(llm.metrics.stage_latencies_ms.is_empty());
+
+        assert_eq!(result.stages[2].output_type, OutputType::Audio);
+        assert_eq!(result.stages[2].envelope.kind, result.envelope.kind);
+        assert!(result.stage("missing").is_none());
+    }
+
+    #[test]
+    fn pipeline_run_options_keep_correlation_id() {
+        let options = RunOptions {
+            correlation_id: Some("turn-7".into()),
+            fallback_to_cloud: true,
+            max_grace_tokens: 8,
+            ..RunOptions::default()
+        };
+
+        let sdk_options = pipeline_run_options(options).expect("inert fields are accepted");
+
+        assert_eq!(sdk_options.correlation_id.as_deref(), Some("turn-7"));
+    }
+
+    #[test]
+    fn pipeline_run_options_reject_what_a_pipeline_cannot_honour() {
+        let generation = RunOptions {
+            generation_config: Some(GenerationConfig::default()),
+            ..RunOptions::default()
+        };
+        let abort = RunOptions {
+            abort_on: vec![AbortSignal::ThermalHot],
+            ..RunOptions::default()
+        };
+
+        for options in [generation, abort] {
+            let err = pipeline_run_options(options).expect_err("must not be silently ignored");
+            assert!(matches!(err, Error::ConfigError { .. }), "got {err:?}");
+        }
+    }
+
+    #[test]
+    fn pipeline_target_mapping_never_reports_remote_work_as_local() {
+        assert_eq!(
+            ExecutionTarget::from_pipeline_target("device"),
+            ExecutionTarget::Local
+        );
+        assert_eq!(
+            ExecutionTarget::from_pipeline_target("local"),
+            ExecutionTarget::Local
+        );
+        assert_eq!(
+            ExecutionTarget::from_pipeline_target("cloud"),
+            ExecutionTarget::Cloud
+        );
+        assert_eq!(
+            ExecutionTarget::from_pipeline_target("fallback:xybrid-edge"),
+            ExecutionTarget::Cloud
+        );
+        assert_eq!(
+            ExecutionTarget::from_pipeline_target("unexpected-remote-target"),
+            ExecutionTarget::Cloud
+        );
     }
 
     #[test]
@@ -3263,5 +4286,177 @@ mod tests {
         assert!(handle.take().is_none());
         handle.set_endpoint("ignored".into());
         assert!(handle.take().is_none());
+    }
+
+    /// Build a partial with just the fields the fanout cares about.
+    fn partial(sequence: u64, text: &str) -> PartialResult {
+        PartialResult {
+            text: text.to_string(),
+            is_stable: false,
+            chunk_sequence: sequence,
+            audio_duration_ms: sequence * 100,
+        }
+    }
+
+    /// Collect events an observer receives.
+    fn recorder() -> (Arc<Mutex<Vec<AsrEvent>>>, AsrObserver) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        let observer: AsrObserver = Box::new(move |event| {
+            sink.lock().unwrap_or_else(|e| e.into_inner()).push(event);
+        });
+        (seen, observer)
+    }
+
+    /// `feed` is non-blocking and the host subscribes a moment later, so the
+    /// first transcripts routinely land before anyone is listening. Dropping
+    /// them would lose the opening words of every utterance.
+    #[test]
+    fn a_partial_produced_before_subscribing_is_delivered_on_subscribe() {
+        let mut fanout = AsrFanout::default();
+        fanout.emit(partial(1, "hello"));
+        fanout.emit(partial(2, "hello there"));
+
+        let (seen, observer) = recorder();
+        fanout.watch(observer);
+
+        // Only the most recent is held: partial text is cumulative, so the
+        // newer one already contains the older.
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events, vec![AsrEvent::Partial(partial(2, "hello there"))]);
+    }
+
+    #[test]
+    fn subscribing_to_a_finished_session_terminates_at_once() {
+        let mut fanout = AsrFanout::default();
+        fanout.finish();
+
+        let (seen, observer) = recorder();
+        fanout.watch(observer);
+
+        // Terminal immediately rather than hanging, and not retained — a
+        // stream that never closes is what strands a host's `for await`.
+        assert_eq!(seen.lock().unwrap().clone(), vec![AsrEvent::Finished]);
+        assert!(fanout.observers.is_empty());
+    }
+
+    #[test]
+    fn finish_notifies_every_observer_once_then_drops_them() {
+        let mut fanout = AsrFanout::default();
+        let (first, first_observer) = recorder();
+        let (second, second_observer) = recorder();
+        fanout.watch(first_observer);
+        fanout.watch(second_observer);
+
+        fanout.emit(partial(1, "hi"));
+        fanout.finish();
+        // Idempotent: a session that is flushed and then dropped reaches this
+        // twice, and the host must not see two terminal events.
+        fanout.finish();
+
+        let expected = vec![AsrEvent::Partial(partial(1, "hi")), AsrEvent::Finished];
+        assert_eq!(first.lock().unwrap().clone(), expected);
+        assert_eq!(second.lock().unwrap().clone(), expected);
+        assert!(
+            fanout.observers.is_empty(),
+            "host closures retained past the terminal event"
+        );
+    }
+
+    #[test]
+    fn streaming_config_rejects_a_sample_rate_the_backends_cannot_accept() {
+        let config = StreamingConfig {
+            sample_rate: 44_100,
+            ..StreamingConfig::default()
+        };
+        let error = config.to_sdk().expect_err("44.1 kHz must be rejected");
+        assert!(matches!(error, Error::ConfigError { .. }), "got {error:?}");
+
+        // Rejected rather than resampled: silently accepting it would produce
+        // confident nonsense instead of an error.
+        assert!(StreamingConfig::default().to_sdk().is_ok());
+    }
+
+    /// A cancel must abandon queued audio, not wait for it.
+    ///
+    /// Dropping the command sender alone does not do this: `Receiver::recv`
+    /// yields every buffered command before reporting disconnection, so the
+    /// worker would transcribe the whole backlog — holding the model and the
+    /// CPU — after the caller believed it had stopped.
+    #[test]
+    fn cancel_abandons_the_queued_backlog() {
+        let (sender, receiver) = mpsc::sync_channel::<AsrCommand>(ASR_COMMAND_CAPACITY);
+        let cancelled = Arc::new(AtomicBool::new(false));
+
+        // Queue work, then cancel before the worker gets to any of it.
+        for _ in 0..8 {
+            sender.send(AsrCommand::Feed(vec![0.0; 16])).unwrap();
+        }
+        cancelled.store(true, Ordering::Relaxed);
+        drop(sender);
+
+        // Stand in for the worker's command loop.
+        let mut processed = 0;
+        while let Ok(_command) = receiver.recv() {
+            if cancelled.load(Ordering::Relaxed) {
+                break;
+            }
+            processed += 1;
+        }
+
+        assert_eq!(processed, 0, "cancelled worker drained the backlog");
+    }
+
+    /// A failed chunk is gone: the core extracts it from its buffer before
+    /// transcribing, so the audio never reaches the transcript. Returning
+    /// that transcript as success hides the hole.
+    #[test]
+    fn a_recorded_chunk_failure_turns_flush_into_an_error() {
+        let failure: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+
+        // First failure wins; later ones must not overwrite the root cause.
+        {
+            let mut recorded = failure.lock().unwrap();
+            recorded.get_or_insert("ASR chunk failed: dtype mismatch".to_string());
+        }
+        {
+            let mut recorded = failure.lock().unwrap();
+            recorded.get_or_insert("ASR chunk failed: something later".to_string());
+        }
+
+        let taken = failure.lock().unwrap().take();
+        assert_eq!(
+            taken.as_deref(),
+            Some("ASR chunk failed: dtype mismatch"),
+            "the first failure is the one worth reporting"
+        );
+        // Taken, so a second flush of a reset session is not haunted by it.
+        assert!(failure.lock().unwrap().is_none());
+    }
+
+    /// Enabling VAD always carries a model directory.
+    ///
+    /// The core reads `enable_vad` without a `vad_model_dir` as "warn on
+    /// stderr and silently use fixed windows", and nothing ships a bundled
+    /// Silero model — so a config that could produce that pair would be a
+    /// feature that quietly does nothing.
+    #[test]
+    fn enabling_vad_always_carries_a_model_directory() {
+        let enabled = StreamingConfig {
+            vad: VadMode::Enabled {
+                model_dir: "/models/silero".into(),
+            },
+            ..StreamingConfig::default()
+        }
+        .to_sdk()
+        .expect("valid config");
+        assert!(enabled.enable_vad);
+        assert_eq!(enabled.vad_model_dir.as_deref(), Some("/models/silero"));
+
+        // The pairing the enum exists to make unrepresentable: no model
+        // directory can survive VAD being off.
+        let off = StreamingConfig::default().to_sdk().expect("valid config");
+        assert!(!off.enable_vad);
+        assert_eq!(off.vad_model_dir, None);
     }
 }

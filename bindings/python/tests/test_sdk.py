@@ -128,6 +128,41 @@ def test_result_conveniences_on_synthetic_result() -> None:
     assert isinstance(xybrid.XybridVoiceInfo.is_female, property)
 
 
+def _stage(stage_id: str, envelope: xybrid.XybridEnvelope, output_type: xybrid.XybridOutputType):
+    return xybrid.XybridStageResult(
+        stage_id=stage_id,
+        envelope=envelope,
+        output_type=output_type,
+        latency_ms=250,
+        execution_target=xybrid.XybridExecutionTarget.LOCAL,
+        metrics=_metrics(250),
+    )
+
+
+def test_pipeline_result_conveniences_reach_every_stage() -> None:
+    asr = _stage("asr", xybrid.XybridEnvelope.text("what time is it"), xybrid.XybridOutputType.TEXT)
+    tts = _stage("tts", xybrid.XybridEnvelope.audio(b"pcm"), xybrid.XybridOutputType.AUDIO)
+    result = xybrid.XybridPipelineResult(
+        envelope=tts.envelope,
+        output_type=xybrid.XybridOutputType.AUDIO,
+        latency_ms=500,
+        stages=[asr, tts],
+    )
+
+    assert result.audio_bytes == b"pcm"
+    assert result.text is None
+    assert result.latency_seconds == pytest.approx(0.5)
+    assert result.stage("asr").text == "what time is it"
+    assert result.stage("tts").audio_bytes == b"pcm"
+    assert result.stage("missing") is None
+
+
+def test_pipeline_run_defaults_its_options() -> None:
+    parameter = inspect.signature(xybrid.XybridPipeline.run).parameters["options"]
+
+    assert parameter.default is None
+
+
 def test_tool_call_conveniences_on_result_and_stream_token() -> None:
     call = xybrid.XybridToolCall(id="call_0", name="get_weather", arguments_json='{"city":"Paris"}')
 
@@ -234,10 +269,100 @@ def test_run_methods_default_their_options(name: str) -> None:
     assert parameter.default is None
 
 
+@pytest.mark.parametrize(
+    ("name", "args"),
+    [
+        ("run", ("envelope",)),
+        ("run_stream", ("envelope",)),
+        ("run_with_context", ("envelope", "context")),
+        ("run_stream_with_context", ("envelope", "context")),
+    ],
+)
+def test_run_methods_forward_every_required_generated_argument(
+    name: str, args: tuple[str, ...]
+) -> None:
+    """The sugar must supply every argument the generated method requires.
+
+    The generated run methods gained a required `cancel` handle -- BoltFFI
+    cannot express an optional handle parameter -- and the sugar kept
+    forwarding the old argument list, so every public call raised TypeError
+    before reaching native code. Nothing caught it: the rest of this suite
+    exercises factories and codecs, never a call through to the wire.
+
+    Calling with an unbacked model reaches the native layer and fails on the
+    missing handle. An arity mismatch would fail earlier, with TypeError.
+    """
+
+    model = xybrid.XybridModel.__new__(xybrid.XybridModel)
+    supplied = {
+        "envelope": xybrid.XybridEnvelope.text("hi"),
+        "context": xybrid.XybridConversationContext(),
+    }
+
+    with pytest.raises(AttributeError, match="_handle"):
+        getattr(model, name)(*(supplied[arg] for arg in args))
+
+
+def test_run_methods_accept_an_explicit_cancellation_token() -> None:
+    """`cancel` is keyword-only, so the positional shape is unchanged."""
+
+    parameter = inspect.signature(xybrid.XybridModel.run).parameters["cancel"]
+
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is None
+
+
 def test_model_supports_explicit_release() -> None:
     assert callable(xybrid.XybridModel.close)
     assert hasattr(xybrid.XybridModel, "__enter__")
     assert hasattr(xybrid.XybridModel, "__exit__")
+
+
+@pytest.mark.parametrize(
+    "subscription",
+    [bolt.XybridDownloadProgressSubscription, bolt.XybridModelDownloadProgressSubscription],
+)
+def test_download_progress_subscriptions_are_iterable(subscription: type) -> None:
+    """The sugar turns boltffi's wait/pop_batch pair into a plain iterable.
+
+    Without it every caller writes the same drain loop, and a generator rename
+    would silently drop the documented `for status in download.progress()`.
+    """
+
+    assert hasattr(subscription, "__iter__")
+    assert callable(subscription.__iter__)
+
+
+def test_download_progress_iteration_drains_before_stopping() -> None:
+    """The terminal status is pushed just before the stream closes.
+
+    A loop that stopped on `unsubscribed` without popping first would drop the
+    `Ready` frame -- exactly the event a progress bar is waiting for.
+    """
+
+    emitted = [
+        xybrid.XybridDownloadStatus(
+            state=xybrid.XybridDownloadState.READY,
+            progress=1.0,
+            downloaded_bytes=2048,
+            total_bytes=2048,
+        )
+    ]
+
+    class ClosedWithPendingItems:
+        """Reports `unsubscribed` while a batch is still buffered."""
+
+        __iter__ = bolt.XybridDownloadProgressSubscription.__iter__
+
+        def wait(self, timeout_milliseconds: int) -> int:
+            return -1
+
+        def pop_batch(self, max_count: int = 16) -> list:
+            return [emitted.pop(0)] if emitted else []
+
+    assert [status.state for status in ClosedWithPendingItems()] == [
+        xybrid.XybridDownloadState.READY
+    ]
 
 
 def test_generation_configs_presets_match_kotlin_values() -> None:
@@ -301,6 +426,11 @@ def test_xybrid_error_is_catchable_and_wraps_the_generated_payload() -> None:
         (xybrid.Timeout, bolt.XybridErrorTimeout(timeout_ms=500), "timed out after 500ms"),
         (xybrid.DirectoryNotFound, bolt.XybridErrorDirectoryNotFound(path="/tmp/x"), "directory not found: /tmp/x"),
         (xybrid.AbortedForCloudFallback, bolt.XybridErrorAbortedForCloudFallback(reason="thermal"), "thermal"),
+        (
+            xybrid.Cancelled,
+            bolt.XybridErrorCancelled(message="download cancelled by caller"),
+            "download cancelled by caller",
+        ),
     ],
 )
 def test_native_errors_raise_the_typed_exception(exception_type: type, payload: object, message: str) -> None:

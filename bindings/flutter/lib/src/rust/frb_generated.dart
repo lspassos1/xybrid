@@ -3283,6 +3283,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  FfiDownloadStatus dco_decode_box_autoadd_ffi_download_status(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_ffi_download_status(raw);
+  }
+
+  @protected
   FfiGenerationConfig dco_decode_box_autoadd_ffi_generation_config(
       dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
@@ -3335,6 +3341,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   int dco_decode_box_autoadd_u_32(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw as int;
+  }
+
+  @protected
+  BigInt dco_decode_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return dco_decode_u_64(raw);
   }
 
   @protected
@@ -3400,11 +3412,13 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   FfiDownloadStatus dco_decode_ffi_download_status(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 2)
-      throw Exception('unexpected arr length: expect 2 but see ${arr.length}');
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
     return FfiDownloadStatus(
       state: dco_decode_ffi_download_state(arr[0]),
       progress: dco_decode_f_64(arr[1]),
+      downloadedBytes: dco_decode_u_64(arr[2]),
+      totalBytes: dco_decode_opt_box_autoadd_u_64(arr[3]),
     );
   }
 
@@ -3472,7 +3486,7 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     switch (raw[0]) {
       case 0:
         return FfiLoadEvent_Progress(
-          dco_decode_f_64(raw[1]),
+          dco_decode_box_autoadd_ffi_download_status(raw[1]),
         );
       case 1:
         return FfiLoadEvent_Complete();
@@ -3901,6 +3915,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  BigInt? dco_decode_opt_box_autoadd_u_64(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return raw == null ? null : dco_decode_box_autoadd_u_64(raw);
+  }
+
+  @protected
   int? dco_decode_opt_box_autoadd_u_8(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return raw == null ? null : dco_decode_box_autoadd_u_8(raw);
@@ -4263,6 +4283,13 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  FfiDownloadStatus sse_decode_box_autoadd_ffi_download_status(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_ffi_download_status(deserializer));
+  }
+
+  @protected
   FfiGenerationConfig sse_decode_box_autoadd_ffi_generation_config(
       SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -4320,6 +4347,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   int sse_decode_box_autoadd_u_32(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     return (sse_decode_u_32(deserializer));
+  }
+
+  @protected
+  BigInt sse_decode_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    return (sse_decode_u_64(deserializer));
   }
 
   @protected
@@ -4391,7 +4424,13 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_state = sse_decode_ffi_download_state(deserializer);
     var var_progress = sse_decode_f_64(deserializer);
-    return FfiDownloadStatus(state: var_state, progress: var_progress);
+    var var_downloadedBytes = sse_decode_u_64(deserializer);
+    var var_totalBytes = sse_decode_opt_box_autoadd_u_64(deserializer);
+    return FfiDownloadStatus(
+        state: var_state,
+        progress: var_progress,
+        downloadedBytes: var_downloadedBytes,
+        totalBytes: var_totalBytes);
   }
 
   @protected
@@ -4473,7 +4512,8 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     var tag_ = sse_decode_i_32(deserializer);
     switch (tag_) {
       case 0:
-        var var_field0 = sse_decode_f_64(deserializer);
+        var var_field0 =
+            sse_decode_box_autoadd_ffi_download_status(deserializer);
         return FfiLoadEvent_Progress(var_field0);
       case 1:
         return FfiLoadEvent_Complete();
@@ -5022,6 +5062,17 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  BigInt? sse_decode_opt_box_autoadd_u_64(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    if (sse_decode_bool(deserializer)) {
+      return (sse_decode_box_autoadd_u_64(deserializer));
+    } else {
+      return null;
+    }
+  }
+
+  @protected
   int? sse_decode_opt_box_autoadd_u_8(SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
 
@@ -5449,6 +5500,13 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  void sse_encode_box_autoadd_ffi_download_status(
+      FfiDownloadStatus self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_ffi_download_status(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_ffi_generation_config(
       FfiGenerationConfig self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -5511,6 +5569,12 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
   }
 
   @protected
+  void sse_encode_box_autoadd_u_64(BigInt self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_u_64(self, serializer);
+  }
+
+  @protected
   void sse_encode_box_autoadd_u_8(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_u_8(self, serializer);
@@ -5569,6 +5633,8 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_ffi_download_state(self.state, serializer);
     sse_encode_f_64(self.progress, serializer);
+    sse_encode_u_64(self.downloadedBytes, serializer);
+    sse_encode_opt_box_autoadd_u_64(self.totalBytes, serializer);
   }
 
   @protected
@@ -5624,7 +5690,7 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     switch (self) {
       case FfiLoadEvent_Progress(field0: final field0):
         sse_encode_i_32(0, serializer);
-        sse_encode_f_64(field0, serializer);
+        sse_encode_box_autoadd_ffi_download_status(field0, serializer);
       case FfiLoadEvent_Complete():
         sse_encode_i_32(1, serializer);
       case FfiLoadEvent_Error(field0: final field0):
@@ -6075,6 +6141,16 @@ class XybridRustLibApiImpl extends XybridRustLibApiImplPlatform
     sse_encode_bool(self != null, serializer);
     if (self != null) {
       sse_encode_box_autoadd_u_32(self, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_opt_box_autoadd_u_64(BigInt? self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    sse_encode_bool(self != null, serializer);
+    if (self != null) {
+      sse_encode_box_autoadd_u_64(self, serializer);
     }
   }
 
@@ -6605,7 +6681,8 @@ class FfiModelLoaderImpl extends RustOpaque implements FfiModelLoader {
   /// Load the model with download progress updates.
   ///
   /// Streams FfiLoadEvent during download:
-  /// - `Progress(f64)` for download progress (0.0 to 1.0)
+  /// - `Progress(FfiDownloadStatus)` with the fraction, bytes transferred
+  ///   and the declared total when the source has one
   /// - `Complete` when the model is ready
   /// - `Error(String)` if loading fails
   ///
